@@ -1,20 +1,57 @@
 class AllCasaAdmins::CasaAdminsController < AllCasaAdminsController
   before_action :set_casa_org
+  before_action -> { @active_nav = "organizations" }
 
   def new
     @casa_admin = CasaAdmin.new
   end
 
   def create
-    @casa_admin = CasaAdmin.new(casa_admin_params)
-    @casa_admin.casa_org = @casa_org
-    @casa_admin.password = SecureRandom.hex(10)
+    service = ::CreateCasaAdminService.new(@casa_org, params, current_user)
+    @casa_admin = service.build
+    begin
+      service.create!
+      redirect_to all_casa_admins_casa_org_path(@casa_org), notice: "New admin created successfully"
+    rescue ActiveRecord::RecordInvalid
+      render :new, status: :unprocessable_content
+    end
+  end
 
-    if @casa_admin.save
-      # TODO: Invite?
-      redirect_to all_casa_admins_casa_org_path(@casa_org), notice: "CASA Admin was successfully created."
+  def edit
+    @casa_admin = CasaAdmin.find(params[:id])
+  end
+
+  def update
+    @casa_admin = CasaAdmin.find(params[:id])
+    if @casa_admin.update(all_casa_admin_params)
+      notice = check_unconfirmed_email_notice(@casa_admin)
+
+      @casa_admin.filter_old_emails!(@casa_admin.email)
+      redirect_to edit_all_casa_admins_casa_org_casa_admin_path(@casa_org), notice: notice
     else
-      render :new
+      render :edit, status: :unprocessable_content
+    end
+  end
+
+  def activate
+    @casa_admin = CasaAdmin.find(params[:id])
+    if @casa_admin.activate
+      CasaAdminMailer.account_setup(@casa_admin).deliver
+
+      redirect_to edit_all_casa_admins_casa_org_casa_admin_path, notice: "Admin was activated. They have been sent an email."
+    else
+      render :edit, status: :unprocessable_content
+    end
+  end
+
+  def deactivate
+    @casa_admin = CasaAdmin.find(params[:id])
+    if @casa_admin.deactivate
+      CasaAdminMailer.deactivation(@casa_admin).deliver
+
+      redirect_to edit_all_casa_admins_casa_org_casa_admin_path, notice: "Admin was deactivated."
+    else
+      render :edit, status: :unprocessable_content
     end
   end
 
@@ -22,9 +59,6 @@ class AllCasaAdmins::CasaAdminsController < AllCasaAdminsController
 
   def set_casa_org
     @casa_org = CasaOrg.find(params[:casa_org_id])
-  end
-
-  def casa_admin_params
-    params.require(:casa_admin).permit(:email, :display_name)
+    # @casa_org = CasaOrg.find_by(slug: params[:casa_org_id]) # TODO when using slugs
   end
 end

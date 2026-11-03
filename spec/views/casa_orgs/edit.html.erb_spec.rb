@@ -1,0 +1,203 @@
+require "rails_helper"
+
+RSpec.describe "casa_org/edit", type: :view do
+  let(:organization) { build_stubbed(:casa_org) }
+
+  before do
+    assign(:contact_type_groups, [])
+    assign(:contact_types, [])
+    assign(:hearing_types, [])
+    assign(:judges, [])
+    assign(:learning_hour_types, [])
+    assign(:learning_hour_topics, [])
+    assign(:sent_emails, [])
+    assign(:contact_topics, [])
+    assign(:custom_org_links, [])
+    assign(:placement_types, [])
+
+    allow(view).to receive(:current_organization).and_return(organization)
+
+    sign_in build_stubbed(:casa_admin)
+  end
+
+  it "has casa org edit page text" do
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text "Settings"
+    expect(rendered).not_to have_text "sign in before continuing"
+    expect(rendered).to have_selector("input[required=required]", id: "casa_org_name")
+  end
+
+  it "has contact topic content" do
+    contact_topic = build_stubbed(:contact_topic, question: "Test Question", details: "Test details")
+    assign(:contact_topics, [contact_topic])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text("Test Question")
+    expect(rendered).to have_text("Test details")
+    expect(rendered).to have_css("#contact-topics [id='contact_topic-#{contact_topic.id}']", text: "Test Question")
+    expect(rendered).to have_link("Edit", href: edit_contact_topic_path(contact_topic))
+  end
+
+  it "has contact types content" do
+    contact_type = build_stubbed(:contact_type, name: "Contact type 1")
+    assign(:contact_types, [contact_type])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text("Contact type 1")
+    expect(rendered).to have_text(contact_type.name)
+    expect(rendered).to have_table("contact-types",
+      with_rows:
+      [
+        ["Contact type 1", "Yes", "Edit"]
+      ])
+  end
+
+  it "has contact type groups content" do
+    contact_type_group = build_stubbed(:contact_type_group, casa_org: organization, name: "Contact type group 1")
+    assign(:contact_type_groups, [contact_type_group])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text("Contact type group 1")
+    expect(rendered).to have_text(contact_type_group.name)
+    expect(rendered).to have_table("contact-type-groups",
+      with_rows: [
+        ["Contact type group 1", "Yes", "Edit"]
+      ])
+  end
+
+  it "has hearing types content" do
+    hearing_type = build_stubbed(:hearing_type, casa_org: organization, name: "Hearing type 1")
+    assign(:hearing_types, [hearing_type])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text("Hearing type 1")
+    expect(rendered).to have_table("hearing-types",
+      with_rows:
+      [
+        ["Hearing type 1", "Yes", "Edit"]
+      ])
+  end
+
+  it "has judge content" do
+    judge = build_stubbed(:judge, casa_org: organization, name: "Joey Tom")
+    assign(:judges, [judge])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text(judge.name)
+  end
+
+  it "has placement types content" do
+    placement_type = build_stubbed(:placement_type, name: "Placement type 1")
+    placement_type_2 = build_stubbed(:placement_type, name: "Placement type 2")
+    assign(:placement_types, [placement_type, placement_type_2])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text("Manage case placement types")
+    expect(rendered).to have_table("placement-types-table",
+      with_rows:
+      [
+        ["Placement type 1", "Edit"],
+        ["Placement type 2", "Edit"]
+      ])
+  end
+
+  it "does not show download prompt with no custom template" do
+    render template: "casa_org/edit"
+
+    expect(rendered).not_to have_text("Download current template")
+  end
+
+  it "has sent emails content" do
+    admin = build_stubbed(:casa_admin, casa_org: organization)
+    without_partial_double_verification do
+      allow(view).to receive(:to_user_timezone).and_return(Time.zone.local(2021, 1, 2, 12, 30, 0))
+    end
+
+    sent_email = build_stubbed(:sent_email, user: admin, created_at: Time.zone.local(2021, 1, 2, 12, 30, 0))
+    assign(:sent_emails, [sent_email])
+
+    render template: "casa_org/edit"
+
+    expect(rendered).to have_text(sent_email.sent_address)
+    expect(rendered).to have_table("sent-emails",
+      with_rows: [
+        ["Mailer Type", "Mail Action Category", admin.email, "12:30pm 02 Jan 2021"]
+      ])
+  end
+
+  context "with a template uploaded" do
+    # NOTE(@abachman): Use create instead of build_stubbed because ActiveStorage
+    # needs to save to the DB
+    let(:organization) { create(:casa_org) }
+
+    it "renders a prompt to download current template" do
+      organization.court_report_template.attach(io: File.open("#{Rails.root.join("app/documents/templates/default_report_template.docx")}"), filename: 'default_report_template
+.docx', content_type: "application/docx")
+
+      render template: "casa_org/edit"
+
+      expect(rendered).to have_text("Download current template")
+    end
+  end
+
+  describe "additional expense feature flag" do
+    context "enabled" do
+      it "has option to enable additional expenses" do
+        allow(Flipper).to receive(:enabled?).with(:show_additional_expenses).and_return(true)
+
+        render template: "casa_org/edit"
+
+        expect(rendered).to have_text("Volunteers can add other expenses")
+      end
+    end
+
+    context "disabled" do
+      it "has option to enable additional expenses" do
+        allow(Flipper).to receive(:enabled?).with(:show_additional_expenses).and_return(false)
+
+        render template: "casa_org/edit"
+
+        expect(rendered).not_to have_text("Volunteers can add other expenses")
+      end
+    end
+  end
+
+  describe "custom org links" do
+    let(:casa_org) { build_stubbed :casa_org }
+    before { allow(view).to receive(:current_organization).and_return(casa_org) }
+
+    it "has custom org link content" do
+      render template: "casa_org/edit"
+      expect(rendered).to have_text("Custom links")
+    end
+
+    context "when the org has no custom links" do
+      before { assign(:custom_org_links, []) }
+
+      it "includes a helpful message" do
+        render template: "casa_org/edit"
+        expect(rendered).to have_text("No custom links have been added for this organization.")
+      end
+    end
+
+    context "when the org has custom links" do
+      let(:link_text) { "Example Link" }
+      let(:link_url) { "https://www.example.com" }
+      let(:custom_org_link) { build_stubbed :custom_org_link, text: link_text, url: link_url }
+      before { assign(:custom_org_links, [custom_org_link]) }
+
+      it "has custom link details" do
+        render template: "casa_org/edit"
+        expect(rendered).to have_text link_text
+        expect(rendered).to have_text link_url
+      end
+    end
+  end
+end

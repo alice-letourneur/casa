@@ -1,31 +1,35 @@
 class HearingTypesController < ApplicationController
-  before_action :authenticate_user!, :must_be_admin
+  layout "casa_app"
+  before_action -> { @active_nav = "settings" }
   before_action :set_hearing_type, except: [:new, :create]
+  after_action :verify_authorized
 
   def new
+    authorize HearingType
     @hearing_type = HearingType.new
   end
 
   def create
+    authorize HearingType
     @hearing_type = HearingType.new(hearing_type_params)
 
-    respond_to do |format|
-      if @hearing_type.save
-        format.html { redirect_to edit_casa_org_path(current_organization), notice: "Hearing Type was successfully created." }
-      else
-        format.html { render :new }
-      end
+    if @hearing_type.save
+      redirect_to edit_casa_org_path(current_organization), notice: "Hearing Type was successfully created."
+    else
+      render :new, status: :unprocessable_content
     end
   end
 
   def edit
+    authorize @hearing_type
   end
 
   def update
+    authorize @hearing_type
     if @hearing_type.update(hearing_type_params)
       redirect_to edit_casa_org_path(current_organization), notice: "Hearing Type was successfully updated."
     else
-      render :edit
+      render :edit, status: :unprocessable_content
     end
   end
 

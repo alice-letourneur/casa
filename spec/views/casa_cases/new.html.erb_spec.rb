@@ -1,35 +1,39 @@
 require "rails_helper"
 
-describe "casa_cases/new" do
-  subject { render template: "casa_cases/new" }
-
-  before do
-    assign :casa_case, CasaCase.new
-    assign :contact_types, []
-
-    enable_pundit(view, user)
-    allow(view).to receive(:current_user).and_return(user)
-    allow(view).to receive(:current_organization).and_return(user.casa_org)
-  end
+RSpec.describe "casa_cases/new", type: :view do
+  let(:casa_org) { create(:casa_org) }
+  let(:user) { create(:casa_admin, casa_org: casa_org) }
+  let(:contact_type_group) { create(:contact_type_group, casa_org: casa_org) }
+  let(:contact_type) { create(:contact_type, contact_type_group: contact_type_group) }
 
   context "while signed in as admin" do
-    let(:user) { build_stubbed(:casa_admin) }
-    before do
-      sign_in user
-    end
+    it "has youth birth month and year" do
+      enable_pundit(view, user)
+      allow(view).to receive(:current_user).and_return(user)
+      allow(view).to receive(:current_organization).and_return(casa_org)
 
-    it { is_expected.to have_selector("a", text: "Back") }
-    it { is_expected.to include(CGI.escapeHTML("Youth's Birth Month & Year")) }
+      assign :casa_case, build(:casa_case, casa_org: casa_org)
+      assign :contact_types, casa_org.contact_types
+
+      render template: "casa_cases/new"
+
+      expect(rendered).to have_content("Youth's birth month and year")
+    end
   end
 
-  context "while signed in as supervisor" do
-    let(:user) { build_stubbed(:supervisor) }
-    before do
-      sign_in user
-    end
+  context "when trying to assign a volunteer to a case" do
+    it "is able to assign volunteers" do
+      enable_pundit(view, user)
+      allow(view).to receive(:current_user).and_return(user)
+      allow(view).to receive(:current_organization).and_return(user.casa_org)
 
-    it { is_expected.to have_selector("a", text: "Back") }
-    it { is_expected.not_to include(CGI.escapeHTML("Youth's Birth Month & Year")) }
-    it { is_expected.to have_selector("label", text: "Contact types") }
+      assign :casa_case, build(:casa_case, casa_org: user.casa_org)
+      assign :contact_types, casa_org.contact_types
+
+      render template: "casa_cases/new"
+
+      expect(rendered).to have_content("Assign a volunteer")
+      expect(rendered).to have_css("#casa_case_case_assignments_attributes_0_volunteer_id")
+    end
   end
 end

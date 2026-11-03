@@ -1,0 +1,247 @@
+require "rails_helper"
+
+RSpec.describe "case_contacts/edit", type: :system do
+  let(:organization) { build(:casa_org, :all_reimbursements_enabled) }
+  let(:volunteer) { create(:volunteer, :with_single_case, casa_org: organization) }
+  let(:casa_case) { volunteer.casa_cases.first }
+  let(:contact_types) { create_list(:contact_type, 2, casa_org: organization) }
+  let(:case_contact) do
+    create(:case_contact, duration_minutes: 105, casa_case:, creator: volunteer, contact_types: [contact_types.first])
+  end
+
+  let(:user) { volunteer }
+
+  before { sign_in user }
+
+  context "when admin" do
+    let(:admin) { create(:casa_admin, casa_org: organization) }
+
+    let(:user) { admin }
+
+    # Re-enabled 2026-07-31 -- see case_contacts_new_design_spec: "fails only in the full suite, green
+    # in isolation, no reproducible seed" was the signature of the ENV[] partial double in
+    # android_app_associations_spec, not of a race in this page.
+    it "successfully edits case contact", :js do
+      visit edit_case_contact_path(case_contact)
+
+      complete_details_page(case_numbers: [], contact_types: [], contact_made: true, medium: "Letter")
+      complete_notes_page
+      fill_in_expenses_page
+
+      click_on "Submit"
+
+      expect(page).to have_text "Case contact created at #{case_contact.created_at.strftime("%-I:%-M %p on %m-%e-%Y")}, was successfully updated."
+      case_contact.reload
+      expect(case_contact.casa_case_id).to eq casa_case.id
+      expect(case_contact.duration_minutes).to eq 105
+      expect(case_contact.medium_type).to eq "letter"
+      expect(case_contact.contact_made).to be true
+    end
+
+    it "successfully edits case contact with mileage reimbursement", :js do
+      visit edit_case_contact_path(case_contact)
+
+      complete_details_page(case_numbers: [], contact_types: [], contact_made: true, medium: "In person", hours: 1, minutes: 45, occurred_on: Date.new(2020, 4, 4))
+      complete_notes_page
+      fill_in_expenses_page(miles: 10, want_reimbursement: true, address: "123 str")
+
+      click_on "Submit"
+      expect(page).to have_text "Case contact created at #{case_contact.created_at.strftime("%-I:%-M %p on %m-%e-%Y")}, was successfully updated."
+      case_contact.reload
+      volunteer.address&.reload
+      expect(case_contact.casa_case.volunteers[0]).to eq volunteer
+      expect(volunteer.address&.content).to eq "123 str"
+      expect(case_contact.casa_case_id).to eq casa_case.id
+      expect(case_contact.duration_minutes).to eq 105
+      expect(case_contact.medium_type).to eq "in-person"
+      expect(case_contact.contact_made).to be true
+    end
+
+    it "offers a volunteer picker for a case contact with multiple volunteers" do
+      create(:case_assignment, casa_case:, volunteer: build(:volunteer, casa_org: organization))
+      case_contact.update!(creator: admin)
+      expect(casa_case.volunteers).not_to include case_contact.creator
+      expect(casa_case.volunteers.size).to be > 1
+
+      visit edit_case_contact_path(case_contact)
+
+      complete_details_page(case_numbers: [], contact_types: [], contact_made: true, medium: "In person", hours: 1, minutes: 45, occurred_on: "04/04/2020")
+
+      check "Request travel or other reimbursement"
+      expect(page).to have_select("case_contact_reimbursement_volunteer_id")
+      expect(page).to have_field("case_contact_volunteer_address_line_1", disabled: false)
+      expect(page).to have_no_text("This is not currently possible")
+    end
+
+    context "when user is part of a different organization" do
+      let(:other_organization) { build(:casa_org) }
+      let(:admin) { create(:casa_admin, casa_org: other_organization) }
+
+      it "fails across organizations" do
+        visit edit_case_contact_path(case_contact)
+        expect(page).to have_current_path root_path, ignore_query: true
+      end
+    end
+  end
+
+  it "can update case contact attributes", :js do
+    expect(case_contact.active?).to be true
+    expect(case_contact.contact_types).to contain_exactly(contact_types.first)
+    expect(case_contact.contact_made).to be false
+    expect(case_contact.medium_type).to eq "in-person"
+    expect(case_contact.duration_minutes).to eq 105
+    expect(case_contact.volunteer_address).to be_blank
+    expect(case_contact.notes).to be_blank
+    expect(case_contact.contact_topic_answers).to be_empty
+    expect(case_contact.miles_driven).to be_zero
+    expect(case_contact.want_driving_reimbursement).to be false
+    expect(case_contact.additional_expenses).to be_empty
+
+    contact_topic = create(:contact_topic, casa_org: organization)
+
+    visit edit_case_contact_path(case_contact)
+
+    complete_details_page(
+      case_numbers: [], contact_made: true, medium: "Letter",
+      occurred_on: Time.zone.today - 5.days, hours: 1, minutes: 5
+    )
+    uncheck contact_types.first.name
+    check contact_types.second.name
+    answer_topic contact_topic.question, "Topic 1 Answer."
+    fill_in_expenses_page(miles: 50, want_reimbursement: true, address: "123 Form St")
+    click_on "Submit"
+
+    expect(page).to have_text "Case contact created at #{case_contact.created_at.strftime("%-I:%-M %p on %m-%e-%Y")}, was successfully updated."
+    case_contact.reload
+    case_contact.contact_topic_answers&.reload
+    expect(case_contact.duration_minutes).to eq 65
+    expect(case_contact.medium_type).to eq "letter"
+    expect(case_contact.contact_made).to be true
+    expect(case_contact.contact_types).to contain_exactly(contact_types.second)
+    # notes
+    expect(case_contact.contact_topic_answers).to be_present
+    expect(case_contact.contact_topic_answers.first.contact_topic).to eq contact_topic
+    expect(case_contact.contact_topic_answers.first.value).to eq "Topic 1 Answer."
+    # reimbursement
+    expect(case_contact.miles_driven).to eq 50
+    expect(case_contact.want_driving_reimbursement).to be true
+    expect(case_contact.volunteer_address).to eq "123 Form St"
+  end
+
+  it "is successful with mileage reimbursement on", :js do
+    visit edit_case_contact_path(case_contact)
+
+    complete_details_page(contact_made: true, medium: "In person", hours: 1, minutes: 45, occurred_on: Date.new(2020, 4, 4))
+    complete_notes_page
+    fill_in_expenses_page(miles: 10, want_reimbursement: true, address: "123 str")
+
+    click_on "Submit"
+
+    expect(page).to have_text "Case contact created at #{case_contact.created_at.strftime("%-I:%-M %p on %m-%e-%Y")}, was successfully updated."
+    case_contact.reload
+    volunteer.reload
+    expect(volunteer.address.content).to eq "123 str"
+    expect(case_contact.casa_case_id).to eq casa_case.id
+    expect(case_contact.duration_minutes).to eq 105
+    expect(case_contact.medium_type).to eq "in-person"
+    expect(case_contact.contact_made).to be true
+  end
+
+  it "autosaves notes", :js do
+    autosave_alert_div = "#contact-form-notes"
+    autosave_alert_css = 'small[role="alert"]'
+    autosave_alert_text = "Saved!"
+
+    case_contact = create(:case_contact, duration_minutes: 105, casa_case: casa_case, creator: volunteer, notes: "Hello from the other side")
+    visit edit_case_contact_path(case_contact)
+
+    complete_details_page(contact_made: true)
+    expect(case_contact.reload.notes).to eq "Hello from the other side"
+
+    fill_in "Additional notes", with: "Hello world"
+
+    within autosave_alert_div do
+      find(autosave_alert_css, text: autosave_alert_text)
+    end
+    expect(case_contact.reload.notes).to eq "Hello world"
+  end
+
+  # Autosave used to be bound to three fields only -- notes, topic answers, expense descriptions -- so
+  # an edit to duration or medium was silently dropped on navigation UNLESS the user also happened to
+  # touch one of those three (an autosave posts the WHOLE form, so it then committed everything).
+  # Whether your work persisted depended on which field you touched last. It is now bound once on the
+  # form, where `input` bubbles from every control type.
+  #
+  # ONE interaction per example on purpose: the "Saved!" alert lingers for 3s, so a second interaction
+  # can match the previous save's alert and read the DB before its own debounce has elapsed.
+  describe "autosave covers the whole form", :js do
+    let(:autosave_alert_div) { "#contact-form-notes" }
+    let(:autosave_alert_css) { 'small[role="alert"]' }
+
+    def wait_for_autosave
+      within(autosave_alert_div) { find(autosave_alert_css, text: "Saved!", wait: 5) }
+    end
+
+    it "saves an edit to a field that has no trigger of its own, and keeps it after leaving" do
+      visit edit_case_contact_path(case_contact)
+
+      fill_in "case_contact_duration_hours", with: 3
+      fill_in "case_contact_duration_minutes", with: 30
+      wait_for_autosave
+
+      expect(case_contact.reload.duration_minutes).to eq(210)
+
+      click_on "Back"
+
+      expect(page).to have_no_text("Editing existing case contact")
+      expect(case_contact.reload.duration_minutes).to eq(210)
+    end
+
+    it "saves a radio choice" do
+      visit edit_case_contact_path(case_contact)
+
+      choose "Letter"
+      wait_for_autosave
+
+      expect(case_contact.reload.medium_type).to eq("letter")
+    end
+
+    it "saves a checkbox" do
+      visit edit_case_contact_path(case_contact)
+
+      check contact_types.second.name
+      wait_for_autosave
+
+      expect(case_contact.reload.contact_types).to include(contact_types.second)
+    end
+  end
+
+  it "offers a way back out of the edit form" do
+    visit edit_case_contact_path(case_contact)
+
+    expect(page).to have_text("Editing existing case contact")
+    click_on "Back"
+
+    expect(page).to have_current_path(case_contacts_path)
+  end
+
+  context "when 'Create another' option is checked" do
+    it "creates a duplicate case contact for the second contact", :js do
+      case_contact_draft_ids = case_contact.draft_case_ids
+      visit edit_case_contact_path(case_contact)
+
+      click_on "Submit & add another"
+
+      expect(page).to have_text("successfully updated")
+      expect(page).to have_text "Record new case contact"
+      expect(page).to have_text casa_case.case_number
+
+      # The reopened form is unsaved until something is entered, so it carries the cases forward in
+      # the markup rather than in a draft row.
+      expect(CaseContact.started.count).to eq(0)
+      expect(page).to have_css(
+        %([data-multiple-select-selected-items-value="#{case_contact_draft_ids.to_json}"]), visible: :all
+      )
+    end
+  end
+end

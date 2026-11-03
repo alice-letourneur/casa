@@ -1,27 +1,111 @@
 class CaseContact < ApplicationRecord
+  include ByOrganizationScope
+  acts_as_paranoid
+
   attr_accessor :duration_hours
 
-  validate :contact_made_chosen
-  validates :duration_minutes, numericality: {greater_than_or_equal_to: 15, message: "Minimum case contact duration should be 15 minutes."}
+  # Structured mailing-address parts for the reimbursement check. They compose into the
+  # volunteer_address snapshot string (kept for storage, validation, exports, and readers);
+  # prefilled from the volunteer's structured Address. See #compose_volunteer_address.
+  attr_accessor :volunteer_address_line_1, :volunteer_address_line_2,
+    :volunteer_address_city, :volunteer_address_state, :volunteer_address_zip,
+    :reimbursement_volunteer_id
+  before_validation :compose_volunteer_address
+
+  validates :contact_made, inclusion: {in: [true, false], message: :must_be_true_or_false}
   validates :miles_driven, numericality: {greater_than_or_equal_to: 0, less_than: 10000}
-  validates :medium_type, presence: true
-  validates :occurred_at, presence: true
-  validate :occurred_at_not_in_future
-  validate :reimbursement_only_when_miles_driven
-  validate :check_if_allow_edit, on: :update
+  validates :medium_type, presence: true, if: :active_or_details?
+  validates :duration_minutes, presence: true, if: :active_or_details?
+  validates :occurred_at, presence: true, if: :active_or_details?
+  MINIMUM_DATE = "1989-01-01".to_date
+  validates :occurred_at, comparison: {
+    greater_than_or_equal_to: MINIMUM_DATE,
+    message: "can't be prior to #{I18n.l(MINIMUM_DATE)}",
+    allow_nil: true
+  }
+  # NOTE: 'extra' day is a temporary fix for user selecting current date, but this validation failing
+  # NOTE: a lambda so the cutoff is evaluated per-validation, not frozen at class-load time (which
+  # made specs flaky when the class first loaded under travel_to a past date).
+  validates :occurred_at, comparison: {
+    less_than: -> { Time.zone.tomorrow + 1.day },
+    message: :cant_be_future,
+    allow_nil: true
+  }
+  validate :reimbursement_only_when_miles_driven, if: :active_or_details?
+  validate :volunteer_address_when_reimbursement_wanted, if: :active_or_details?
+  validate :volunteer_address_is_valid, if: :active_or_details?
+  validate :reimbursement_volunteer_chosen, if: :active_or_details?
 
   belongs_to :creator, class_name: "User"
   has_one :supervisor_volunteer, -> {
     where(is_active: true)
   }, primary_key: :creator_id, foreign_key: :volunteer_id
   has_one :supervisor, through: :creator
+  has_many :followups
 
-  belongs_to :casa_case
+  # Draft casa_case_id is nil until active
+  belongs_to :casa_case, optional: true
+  has_one :casa_org, through: :casa_case
+  # Use creator_casa_org as fallback org relationship for drafts
+  has_one :creator_casa_org, through: :creator, source: :casa_org
+  validates :casa_case_id, presence: true, if: :active?
+  validates :draft_case_ids, presence: {message: :must_be_selected}, if: :active_or_details?
 
-  has_many :case_contact_contact_type
-  has_many :contact_types, through: :case_contact_contact_type, source: :contact_type
+  has_many :case_contact_contact_types
+  validates :case_contact_contact_types, presence: {message: :must_be_selected}, if: :active_or_details?
+  has_many :contact_types, through: :case_contact_contact_types
 
-  accepts_nested_attributes_for :case_contact_contact_type
+  has_many :additional_expenses
+  has_many :contact_topic_answers, dependent: :destroy
+  has_many :contact_topics, through: :contact_topic_answers
+
+  after_save_commit ::CaseContactMetadataCallback.new
+
+  # NOTE: 'notes' & 'expenses' statuses are no longer used. Could be removed from enum if
+  # existing records are migrated to started/details status (draft).
+  # NOTE: enum defines methods (active?) and scopes (.active, .not_active) for each member
+  enum :status, {
+    started: "started",
+    active: "active",
+    details: "details",
+    notes: "notes",
+    expenses: "expenses"
+  }, validate: true, default: :started
+
+  # Throw a draft away for good, with the children that hold FK constraints.
+  #
+  # HARD delete, not Paranoia's `destroy`: a soft-deleted draft keeps its row AND surfaces to
+  # CasaAdmins as a "[DELETE]" row (`grab_all` uses `with_deleted`), so discarding would leave more
+  # clutter than it removed. additional_expenses and contact_topic_answers hold FK constraints to
+  # case_contacts so `really_destroy!` raises while their rows exist, and contact_topic_answers is
+  # itself paranoid, so a plain destroy leaves those rows behind.
+  def discard!
+    followups.destroy_all
+    additional_expenses.destroy_all
+    case_contact_contact_types.destroy_all
+    contact_topic_answers.with_deleted.each(&:really_destroy!)
+    really_destroy!
+  end
+
+  def active_or_details?
+    details? || active?
+  end
+
+  def active_or_expenses?
+    expenses? || active?
+  end
+
+  def active_or_notes?
+    notes? || active?
+  end
+
+  accepts_nested_attributes_for :additional_expenses, reject_if: :all_blank, allow_destroy: true
+
+  # Topic answers are created/destroyed explicitly (POST/DELETE via the contact-topics
+  # controller), so the form only ever *updates* existing rows. Reject attrs without an id so a
+  # slow autosave can't create a duplicate before the new id propagates back to the field.
+  accepts_nested_attributes_for :contact_topic_answers, allow_destroy: true,
+    reject_if: proc { |attrs| attrs["id"].blank? }
 
   scope :supervisors, ->(supervisor_ids = nil) {
     joins(:supervisor_volunteer).where(supervisor_volunteers: {supervisor_id: supervisor_ids}) if supervisor_ids.present?
@@ -29,23 +113,45 @@ class CaseContact < ApplicationRecord
   scope :creators, ->(creator_ids = nil) {
     where(creator_id: creator_ids) if creator_ids.present?
   }
+  scope :casa_org, ->(casa_org_id = nil) {
+    joins(:casa_case).where(casa_cases: {casa_org_id: casa_org_id}) if casa_org_id.present?
+  }
   scope :occurred_between, ->(start_date = nil, end_date = nil) {
     where("occurred_at BETWEEN ? AND ?", start_date, end_date) if start_date.present? && end_date.present?
   }
+  scope :occurred_starting_at, ->(start_date = nil) {
+    where("occurred_at >= ?", start_date) if start_date.present?
+  }
+  scope :occurred_ending_at, ->(end_date = nil) {
+    where("occurred_at <= ?", end_date) if end_date.present?
+  }
+  scope :created_max_ago, ->(time_range = nil) {
+    where("case_contacts.created_at > ?", time_range) if time_range.present?
+  }
   scope :contact_made, ->(contact_made = nil) {
-    where(contact_made: contact_made) if contact_made == true || contact_made == false
+    where(contact_made: contact_made) if /true|false/.match?(contact_made.to_s)
   }
   scope :has_transitioned, ->(has_transitioned = nil) {
-    joins(:casa_case).where(casa_cases: {transition_aged_youth: has_transitioned}) if has_transitioned == true || has_transitioned == false
+    if /true|false/.match?(has_transitioned.to_s)
+      operator = has_transitioned ? "<=" : ">"
+
+      joins(:casa_case).where("casa_cases.birth_month_year_youth #{operator} ?", CasaCase::TRANSITION_AGE.years.ago)
+    end
   }
   scope :want_driving_reimbursement, ->(want_driving_reimbursement = nil) {
-    where(want_driving_reimbursement: want_driving_reimbursement) if want_driving_reimbursement == true || want_driving_reimbursement == false
-  }
-  scope :contact_type, ->(contact_type = nil) {
-    if contact_type.present?
-      joins(:contact_types)
-        .where("contact_types.name in (?)", contact_type)
+    if /true|false/.match?(want_driving_reimbursement.to_s)
+      where(want_driving_reimbursement: want_driving_reimbursement)
     end
+  }
+  scope :contact_type, ->(contact_type_ids = nil) {
+    includes(:contact_types).where("contact_types.id": [contact_type_ids]) if contact_type_ids.present?
+  }
+  scope :contact_types, ->(contact_type_id_list = nil) {
+    contact_type_id_list.reject! { |id| id.blank? }
+
+    return if contact_type_id_list.blank?
+
+    includes(:contact_types).where("contact_types.id": contact_type_id_list)
   }
   scope :contact_type_groups, ->(contact_type_group_ids = nil) {
     # to handle case when passing ids == [''] && ids == nil
@@ -55,6 +161,57 @@ class CaseContact < ApplicationRecord
         .group(:id)
     end
   }
+  scope :grab_all, ->(current_user) {
+    with_deleted if current_user.is_a?(CasaAdmin) # TODO since this cases on user type it should be in a Policy file
+  }
+
+  scope :contact_medium, ->(medium_type) {
+    where(medium_type: medium_type) if medium_type.present?
+  }
+
+  scope :filter_by_reimbursement_status, ->(boolean) { where reimbursement_complete: boolean }
+
+  scope :sorted_by, ->(sort_option) {
+    direction = /desc$/.match?(sort_option) ? "desc" : "asc"
+
+    case sort_option.to_s
+    when /^occurred_at/
+      order(occurred_at: direction)
+    when /^contact_type/
+      joins(:contact_types).merge(ContactType.order(name: direction))
+    when /^medium_type/
+      order(medium_type: direction)
+    when /^want_driving_reimbursement/
+      order(want_driving_reimbursement: direction)
+    when /^contact_made/
+      order(contact_made: direction)
+    else
+      raise(ArgumentError, "Invalid sort option: #{sort_option.inspect}")
+    end
+  }
+
+  scope :with_casa_case, ->(case_ids) {
+    where(casa_case_id: case_ids) if case_ids.present?
+  }
+
+  scope :no_drafts, ->(checked) { (checked == 1) ? active : all }
+
+  scope :with_metadata_pair, ->(key, value) { where("metadata -> ? @> ?::jsonb", key.to_s, value.to_s) }
+  scope :used_create_another, -> { with_metadata_pair(:create_another, true) }
+
+  filterrific(
+    default_filter_params: {sorted_by: "occurred_at_desc"},
+    available_filters: [
+      :sorted_by,
+      :occurred_starting_at,
+      :occurred_ending_at,
+      :contact_type,
+      :contact_made,
+      :contact_medium,
+      :want_driving_reimbursement,
+      :no_drafts
+    ]
+  )
 
   IN_PERSON = "in-person".freeze
   TEXT_EMAIL = "text/email".freeze
@@ -63,39 +220,82 @@ class CaseContact < ApplicationRecord
   LETTER = "letter".freeze
   CONTACT_MEDIUMS = [IN_PERSON, TEXT_EMAIL, VIDEO, VOICE_ONLY, LETTER].freeze
 
+  TOGGLEABLE_COLUMNS = [
+    {key: "relationship", label: "Relationship", index: 4},
+    {key: "medium", label: "Medium", index: 5},
+    {key: "created_by", label: "Created By", index: 6},
+    {key: "contacted", label: "Contacted", index: 7},
+    {key: "topics", label: "Topics", index: 8},
+    {key: "draft", label: "Draft", index: 9}
+  ].freeze
+
   def update_cleaning_contact_types(args)
     transaction do
-      case_contact_contact_type.destroy_all
+      contact_types.clear
       update(args)
     end
   end
 
-  def occurred_at_not_in_future
-    return unless occurred_at && occurred_at >= Date.tomorrow
-
-    errors.add(:occurred_at, :invalid, message: "cannot be in the future")
+  # Displays occurred_at in the format January 1, 1970
+  # @return [String]
+  def occurred_at_display
+    occurred_at.strftime("%B %-d, %Y")
   end
 
+  # Returns the mileage rate if the casa_org has a mileage_rate for the date of the contact. Otherwise returns nil.
+  # @return [BigDecimal, nil]
+  def reimbursement_amount
+    mileage_rate = casa_case.casa_org.mileage_rate_for_given_date(occurred_at.to_datetime)
+    return nil unless mileage_rate
+
+    mileage_rate * miles_driven
+  end
+
+  # On :miles_driven (not :base) so the field itself is flagged; miles_driven defaults to 0 (a valid
+  # number), so without this the field would carry no error even when reimbursement needs it.
   def reimbursement_only_when_miles_driven
     return if miles_driven&.positive? || !want_driving_reimbursement
 
-    errors[:base] << "Must enter miles driven to receive driving reimbursement."
+    errors.add(:miles_driven, "must be entered to receive driving reimbursement")
   end
 
-  def contact_made_chosen
-    errors[:base] << "Must enter whether the contact was made." if contact_made.nil?
-    !contact_made.nil?
+  # On :volunteer_address (not :base) so the mailing-address fieldset is flagged at field level, not
+  # only in the summary. want_driving_reimbursement is required for the mailing address.
+  def volunteer_address_when_reimbursement_wanted
+    if want_driving_reimbursement && volunteer_address&.empty?
+      errors.add(:volunteer_address, "must be entered for reimbursement")
+    end
   end
 
-  def created_in_current_quarter?
-    today = Time.zone.now
-    occurred_at.end_of_quarter > today
+  def volunteer_address_is_valid
+    if volunteer_address&.present?
+      if Address.new(user_id: creator.id, content: volunteer_address).invalid?
+        errors.add(:volunteer_address, "is not valid")
+      end
+    end
   end
 
-  def check_if_allow_edit
-    return if created_in_current_quarter?
+  # The reimbursement address as submitted through the structured form fields. All-nil means the
+  # address arrived as the legacy single string (request specs / factory), not the form.
+  def submitted_address_parts
+    {
+      line_1: volunteer_address_line_1,
+      line_2: volunteer_address_line_2,
+      city: volunteer_address_city,
+      state: volunteer_address_state,
+      zip: volunteer_address_zip
+    }
+  end
 
-    errors[:base] << "cannot edit case contacts created before the current quarter"
+  # Keep the volunteer_address snapshot string in sync with the structured fields the form posts.
+  # Skip when no structured field was submitted (all nil), so the legacy single-string path
+  # (request specs, factory) still sets volunteer_address directly. A blank submit yields "" so
+  # the reimbursement-wanted validation still fires.
+  def compose_volunteer_address
+    parts = submitted_address_parts
+    return if parts.values.all?(&:nil?)
+
+    self.volunteer_address = Address.compose(**parts)
   end
 
   def supervisor_id
@@ -103,7 +303,110 @@ class CaseContact < ApplicationRecord
   end
 
   def has_casa_case_transitioned
-    casa_case.has_transitioned?
+    casa_case.in_transition_age?
+  end
+
+  # {contact_type_id => most recent occurred_at} for the given cases, in one query. The contact
+  # form renders a "last logged" hint for every contact type in the chapter, which otherwise costs
+  # a query per type.
+  def self.last_logged_at_by_contact_type(casa_case_ids)
+    joins(:contact_types)
+      .where(casa_case_id: casa_case_ids)
+      .group("contact_types.id")
+      .maximum(:occurred_at)
+  end
+
+  def contact_groups_with_types
+    hash = Hash.new { |h, k| h[k] = [] }
+    # Only add the includes when the caller has not already preloaded contact_types: calling
+    # .includes on a loaded association throws the preload away and re-queries per case contact,
+    # which is an N+1 on the contacts list (LoadsCaseContacts preloads contact_types).
+    types = contact_types.loaded? ? contact_types : contact_types.includes(:contact_type_group)
+    types.each do |contact_type|
+      hash[contact_type.contact_type_group.name] << contact_type.name
+    end
+    hash
+  end
+
+  def requested_followup
+    followups.find(&:requested?)
+  end
+
+  def should_send_reimbursement_email?
+    want_driving_reimbursement? && supervisor_active?
+  end
+
+  def supervisor_active?
+    !supervisor.blank? && supervisor.active?
+  end
+
+  # Disabled only when there is genuinely no volunteer to attribute the address to -- i.e. no
+  # creator-volunteer, no chosen volunteer, and the case has no volunteers to choose from.
+  def address_field_disabled?
+    volunteer.nil? && !needs_reimbursement_volunteer_choice?
+  end
+
+  # The volunteer whose mailing address the reimbursement uses: the creator when they are the
+  # volunteer, else the one explicitly chosen on the form, else the case's sole volunteer.
+  def volunteer
+    return creator if creator.is_a?(Volunteer)
+    picked_reimbursement_volunteer || (reimbursement_volunteer_options.first if reimbursement_volunteer_options.one?)
+  end
+
+  # Volunteers assigned to the (draft or active) case -- the choices for whose address to reimburse.
+  def reimbursement_volunteer_options
+    @reimbursement_volunteer_options ||= begin
+      case_id = casa_case_id || draft_case_ids&.first
+      case_id.present? ? (CasaCase.find_by(id: case_id)&.volunteers&.to_a || []) : []
+    end
+  end
+
+  def picked_reimbursement_volunteer
+    return if reimbursement_volunteer_id.blank?
+    reimbursement_volunteer_options.find { |v| v.id == reimbursement_volunteer_id.to_i }
+  end
+
+  # A choice is needed when the editor is not the volunteer and the case has several volunteers, so
+  # the app cannot infer whose address to save.
+  def needs_reimbursement_volunteer_choice?
+    !creator.is_a?(Volunteer) && reimbursement_volunteer_options.size > 1
+  end
+
+  def reimbursement_volunteer_chosen
+    return unless want_driving_reimbursement && needs_reimbursement_volunteer_choice?
+    if picked_reimbursement_volunteer.nil?
+      errors.add(:reimbursement_volunteer_id, "must be chosen so the reimbursement address saves to the right volunteer")
+    end
+  end
+
+  def self.options_for_sorted_by
+    sorted_by_params.each.map { |option_pair| option_pair.reverse }
+  end
+
+  def self.case_hash_from_cases(cases)
+    casa_case_ids = cases.map(&:draft_case_ids).flatten.uniq.sort
+    casa_case_ids.each_with_object({}) do |casa_case_id, hash|
+      hash[casa_case_id] = cases.select { |c| c.casa_case_id == casa_case_id || c.draft_case_ids.include?(casa_case_id) }
+    end
+  end
+
+  def casa_org_any_expenses_enabled?
+    creator.casa_org.additional_expenses_enabled || creator.casa_org.show_driving_reimbursement
+  end
+
+  private_class_method def self.sorted_by_params
+    {
+      occurred_at_asc: "Date of contact (oldest first)",
+      occurred_at_desc: "Date of contact (newest first)",
+      contact_type_asc: "Contact type (A-z)",
+      contact_type_desc: "Contact type (z-A)",
+      medium_type_asc: "Contact medium (A-z)",
+      medium_type_desc: "Contact medium (z-A)",
+      want_driving_reimbursement_asc: "Want driving reimbursement ('no' first)",
+      want_driving_reimbursement_desc: "Want driving reimbursement ('yes' first)",
+      contact_made_asc: "Contact made ('no' first)",
+      contact_made_desc: "Contact made ('yes' first)"
+    }
   end
 end
 
@@ -113,15 +416,21 @@ end
 #
 #  id                         :bigint           not null, primary key
 #  contact_made               :boolean          default(FALSE)
-#  duration_minutes           :integer          not null
+#  deleted_at                 :datetime
+#  draft_case_ids             :integer          default([]), is an Array
+#  duration_minutes           :integer
 #  medium_type                :string
+#  metadata                   :jsonb
 #  miles_driven               :integer          default(0), not null
 #  notes                      :string
-#  occurred_at                :datetime         not null
+#  occurred_at                :datetime
+#  reimbursement_complete     :boolean          default(FALSE)
+#  status                     :string           default("started")
+#  volunteer_address          :string
 #  want_driving_reimbursement :boolean          default(FALSE)
 #  created_at                 :datetime         not null
 #  updated_at                 :datetime         not null
-#  casa_case_id               :bigint           not null
+#  casa_case_id               :bigint
 #  creator_id                 :bigint           not null
 #
 # Indexes

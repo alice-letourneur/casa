@@ -1,7 +1,8 @@
 require "rails_helper"
 
-describe "volunteers/new" do
+RSpec.describe "volunteers/new", type: :view do
   subject { render template: "volunteers/new" }
+
   before do
     assign :volunteer, Volunteer.new
   end
@@ -10,7 +11,5 @@ describe "volunteers/new" do
     before do
       sign_in_as_admin
     end
-
-    it { is_expected.to have_selector("a", text: "Return to Dashboard") }
   end
 end

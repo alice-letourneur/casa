@@ -1,86 +1,140 @@
 # frozen_string_literal: true
 
 class CaseCourtReportsController < ApplicationController
-  before_action :authenticate_user!
-  before_action :set_casa_case, only: %i[show]
+  GENERATION_FAILED_MESSAGE = "Something went wrong generating this report. Please use the bug reporting form linked at the bottom of this page, or notify casa@rubyforgood.org"
 
-  # GET /case_court_reports
+  before_action :set_casa_case, only: %i[show]
+  after_action :verify_authorized
+  skip_after_action :verify_policy_scoped # TODO: index should call policy_scope; remove this skip once it does
+
   def index
-    @assigned_cases = CasaCase.actively_assigned_to(current_user)
-      .select(:id, :case_number, :transition_aged_youth)
+    authorize CaseCourtReport
+    @active_nav = "court_reports"
+    assigned_cases.select(:id, :case_number, :birth_month_year_youth)
+    render layout: "casa_app"
   end
 
-  # GET /case_court_reports/:id
   def show
-    unless @casa_case
+    authorize CaseCourtReport
+    if !@casa_case || !@casa_case.court_reports.attached?
       flash[:alert] = "Report #{params[:id]} is not found."
-      redirect_to(case_court_reports_path) and return # rubocop:disable Style/AndOr
+      redirect_to(case_court_reports_path) and return
     end
 
     respond_to do |format|
       format.docx do
-        report_data = generate_report_to_string(@casa_case)
-        send_report(report_data)
-      end
-    end
-  end
-
-  # POST /case_court_reports
-  def generate
-    casa_case = CasaCase.find_by(case_params)
-
-    respond_to do |format|
-      format.json do
-        if casa_case
-          render json: {link: case_court_report_path(casa_case.case_number, format: "docx"), status: :ok}
-        else
-          flash[:alert] = "Report #{params[:case_number]} is not found."
-          error_messages = render_to_string partial: "layouts/flash_messages.html.erb", layout: false, locals: flash
-          flash.discard
-
-          render json: {link: "", status: :not_found, error_messages: error_messages}, status: :not_found
+        @casa_case.latest_court_report.open do |file|
+          send_data File.binread(file.path),
+            type: :docx,
+            filename: "#{@casa_case.case_number}.docx",
+            disposition: "attachment",
+            status: :ok
         end
       end
     end
   end
 
+  def generate
+    authorize CaseCourtReport
+    casa_case = CasaCase.find_by(case_number: case_params[:case_number], casa_org: current_user.casa_org)
+
+    respond_to do |format|
+      format.json do
+        if casa_case
+          report_data = generate_report_to_string(casa_case, date_range_params)
+          save_report(report_data, casa_case)
+
+          render json: {link: case_court_report_path(casa_case.case_number, format: "docx"), status: :ok}
+        else
+          error_messages = generate_error("Report #{params[:case_number]} is not found.")
+
+          render json: {link: "", status: :not_found, error_messages: error_messages}, status: :not_found
+        end
+      end
+    end
+  rescue Zip::Error => e
+    # Keep the actionable message, but a broken org template is still something we want to hear about.
+    report_generation_error(e)
+
+    error_messages = generate_error("Template is not found")
+    render json: {status: :not_found, error_messages: error_messages}, status: :not_found
+  rescue => e
+    report_generation_error(e)
+
+    error_messages = generate_error(GENERATION_FAILED_MESSAGE)
+    render json: {status: :unprocessable_content, error_messages: error_messages}, status: :unprocessable_content
+  end
+
   private
+
+  def date_range_params
+    params.permit(:time_zone, case_court_report: %i[start_date end_date include_empty_topics])
+  end
 
   def case_params
     params.require(:case_court_report).permit(:case_number)
   end
 
   def set_casa_case
-    @casa_case = CasaCase.find_by(case_number: params[:id])
+    @casa_case = CasaCase.find_by(case_number: params[:id], casa_org: current_user.casa_org)
   end
 
-  def generate_report_to_string(casa_case)
+  # The case picker renders CasaCaseDecorator#court_report_select_option for every case -- for an
+  # admin that is every active case in the chapter -- which reads the assigned volunteers and, via
+  # court_report_default_start_date, the case's court dates.
+  def assigned_cases
+    @assigned_cases = if current_user.volunteer?
+      CasaCase.actively_assigned_to(current_user)
+    else
+      current_user.casa_org.casa_cases.active
+    end.includes(:assigned_volunteers, :court_dates)
+  end
+
+  def generate_report_to_string(casa_case, time_range)
     return unless casa_case
 
-    type = report_type(casa_case)
-    court_report = CaseCourtReport.new(
-      volunteer_id: current_user.id,
-      case_id: casa_case.id,
-      path_to_template: path_to_template(type)
-    )
-    court_report.generate_to_string
-  end
+    casa_case.casa_org.open_org_court_report_template do |template_docx_file|
+      args = {
+        volunteer_id: current_user.volunteer? ? current_user.id : casa_case.assigned_volunteers.first&.id,
+        case_id: casa_case.id,
+        path_to_template: template_docx_file.to_path,
+        time_zone: time_range[:time_zone],
+        start_date: time_range[:case_court_report][:start_date],
+        end_date: time_range[:case_court_report][:end_date],
+        include_empty_topics: time_range[:case_court_report][:include_empty_topics]
+      }
+      context = CaseCourtReportContext.new(args).context
+      court_report = CaseCourtReport.new(path_to_template: template_docx_file.to_path, context: context)
 
-  def report_type(casa_case)
-    casa_case.has_transitioned? ? "transition" : "non_transition"
-  end
-
-  def path_to_template(type)
-    "app/documents/templates/report_template_#{type}.docx"
-  end
-
-  def send_report(data)
-    Tempfile.create do |t|
-      t.binmode
-      t.write(data)
-      t.rewind
-      t.close
-      send_data File.open(t.path, "rb").read, type: :docx, disposition: "attachment", status: :ok
+      return court_report.generate_to_string
     end
+  end
+
+  def save_report(report_data, casa_case)
+    Tempfile.create do |t|
+      t.binmode.write(report_data)
+      t.rewind
+      casa_case.court_reports.attach(
+        io: File.open(t.path), filename: "#{casa_case.case_number}.docx"
+      )
+    end
+  end
+
+  # Report the exception rather than rendering it, so devs get technical details and users are spared them.
+  def report_generation_error(error)
+    case_number = params.dig(:case_court_report, :case_number)
+
+    Bugsnag.notify(error) do |event|
+      event.add_metadata(:court_report, {case_number: case_number, user_id: current_user&.id})
+    end
+    Rails.logger.error("Court report generation failed for case #{case_number}: #{error.class}: #{error.message}")
+  end
+
+  def generate_error(message)
+    flash[:alert] = message
+    error_messages = render_to_string partial: "layouts/flash_messages", formats: :html, layout: false, locals: flash
+    flash.discard
+
+    error_messages
   end
 end

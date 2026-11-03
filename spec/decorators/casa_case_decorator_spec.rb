@@ -1,0 +1,114 @@
+require "rails_helper"
+
+RSpec.describe CasaCaseDecorator do
+  describe "#court_report_submission" do
+    subject { casa_case.decorate.court_report_submission }
+
+    let(:casa_case) { build(:casa_case, court_report_status: court_report_status) }
+
+    context "when case_report_status is not_submitted" do
+      let(:court_report_status) { :not_submitted }
+
+      it { is_expected.to eq("Not submitted") }
+    end
+
+    context "when case_report_status is submitted" do
+      let(:court_report_status) { :submitted }
+
+      it { is_expected.to eq("Submitted") }
+    end
+
+    context "when case_report_status is in_review" do
+      let(:court_report_status) { :in_review }
+
+      it { is_expected.to eq("In review") }
+    end
+
+    context "when case_report_status is completed" do
+      let(:court_report_status) { :completed }
+
+      it { is_expected.to eq("Completed") }
+    end
+  end
+
+  describe "#court_report_submission" do
+    subject { casa_case.decorate.court_report_submitted_date }
+
+    let(:submitted_time) { Time.parse("Sun Nov 08 11:06:20 2020") }
+    let(:casa_case) { build(:casa_case, court_report_submitted_at: submitted_time) }
+
+    it { is_expected.to eq "November 8, 2020" }
+
+    context "when report is not submitted" do
+      let(:submitted_time) { nil }
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe "#formatted_updated_at" do
+    subject { casa_case.decorate.formatted_updated_at }
+
+    let(:updated_at_time) { Time.parse("Wed Dec 9 12:51:20 2020") }
+    let(:casa_case) { build(:casa_case, updated_at: updated_at_time) }
+
+    it { is_expected.to eq "12-09-2020" }
+  end
+
+  describe "#formatted_next_court_date" do
+    subject { casa_case.decorate.formatted_next_court_date }
+
+    let(:casa_case) { create(:casa_case) }
+
+    context "with no court dates" do
+      it { is_expected.to be_nil }
+    end
+
+    context "with only past court dates" do
+      before { create(:court_date, casa_case: casa_case, date: 1.week.ago) }
+
+      it { is_expected.to be_nil }
+    end
+
+    context "with upcoming court dates" do
+      before do
+        create(:court_date, casa_case: casa_case, date: 3.weeks.from_now)
+        create(:court_date, casa_case: casa_case, date: 1.week.from_now)
+        create(:court_date, casa_case: casa_case, date: 2.weeks.ago)
+      end
+
+      it "returns the earliest upcoming date, formatted" do
+        expect(subject).to eq(I18n.l(1.week.from_now, format: :full))
+      end
+    end
+  end
+
+  describe "#emancipation_checklist_count" do
+    it "returns a fraction indicating how many emancipation categories have been fulfilled" do
+      casa_case = build(:casa_case)
+
+      expect(casa_case).to(
+        receive(:casa_case_emancipation_categories).and_return(
+          double(:categories, size: 2)
+        )
+      )
+      expect(EmancipationCategory).to receive(:count).and_return(5)
+      expect(casa_case.decorate.emancipation_checklist_count).to eq "2 / 5"
+    end
+  end
+
+  describe "#hash_for_multi_select" do
+    let(:casa_case) { create(:casa_case, case_number: "CINA-1") }
+
+    # It used to carry `group: casa_org_id`. That was invisible while the multiselect only SEARCHED
+    # groups, but once it started rendering optgroups the raw org id was drawn as a header: a stray,
+    # unclickable number above the cases. Every case here is already org-scoped, so there is no group
+    # worth showing.
+    it "declares no group, so the multiselect draws no header" do
+      hash = casa_case.decorate.hash_for_multi_select
+
+      expect(hash).not_to have_key(:group)
+      expect(hash).to include(value: casa_case.id, text: "CINA-1")
+    end
+  end
+end

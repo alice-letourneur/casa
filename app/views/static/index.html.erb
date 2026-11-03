@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<%# Public marketing / landing page (static#index, layout false). Rebuilt on the CASA design
+    system: compiled tailwind.css + Figtree + the brand palette, replacing the Tailwind CDN + Alpine.
+    Signed-in users are redirected away by the controller. The #organizations section and .org_logo
+    images are spec-locked. %>
+<html lang="en" class="h-full scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CASA Volunteer Tracker</title>
+  <%= csrf_meta_tags %>
+  <%= csp_meta_tag %>
+  <%= stylesheet_link_tag "tailwind", "data-turbo-track": "reload" %>
+</head>
+<body class="h-full bg-white font-sans text-slate-800 antialiased">
+  <header class="relative overflow-hidden bg-gradient-to-br from-brand-700 via-brand-600 to-indigo-500 text-white">
+    <div class="pointer-events-none absolute -right-24 -top-24 h-96 w-96 rounded-full bg-white/10 blur-3xl"></div>
+    <div class="pointer-events-none absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-indigo-300/20 blur-3xl"></div>
+    <div class="relative mx-auto max-w-7xl px-6">
+      <nav class="flex items-center justify-between py-6">
+        <a href="/" class="text-lg font-bold tracking-tight lg:text-2xl">CasaVolunteerTracking.org</a>
+        <div class="flex items-center gap-4 text-sm font-medium sm:gap-8">
+          <a href="#about" class="hidden hover:text-white/80 sm:block">About</a>
+          <a href="#testimonials" class="hidden hover:text-white/80 sm:block">Testimonials</a>
+          <a href="#contact" class="hidden hover:text-white/80 sm:block">Contact</a>
+          <%= link_to "Log in", new_user_session_path, class: "rounded-lg bg-white px-4 py-2 text-sm font-semibold text-brand-700 shadow-sm transition hover:bg-white/90" %>
+        </div>
+      </nav>
+
+      <div class="grid items-center gap-10 pb-20 pt-8 lg:grid-cols-2 lg:pb-28 lg:pt-12">
+        <div class="text-center lg:text-left">
+          <h1 class="text-4xl font-bold leading-tight tracking-tight sm:text-5xl">CASA volunteer tracking removes the complexity of managing your CASA and tracking your volunteers.</h1>
+          <p class="mt-5 text-lg text-white/80">Ready to make yourself more efficient?</p>
+          <div class="mt-8">
+            <%= link_to new_user_session_path, class: "inline-flex items-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-brand-700 shadow-sm transition hover:bg-white/90" do %>
+              Sign in <i class="bi bi-arrow-right" aria-hidden="true"></i>
+            <% end %>
+          </div>
+        </div>
+        <div class="hidden lg:block"><%= image_tag "hero-image.svg", alt: "", class: "mx-auto w-full max-w-md" %></div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="about" class="mx-auto max-w-7xl px-6 py-20">
+      <div class="mx-auto max-w-2xl text-center">
+        <h2 class="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Removes the complexity from your day</h2>
+        <p class="mt-3 text-lg text-slate-600">…and lets you spend time helping those who need it.</p>
+        <div class="mt-6">
+          <%= link_to "Get in touch", "mailto:casa@rubyforgood.org?Subject=CasaVolunteerTracking%20Interest", class: button_classes(:primary) %>
+        </div>
+      </div>
+
+      <% features = [
+        ["case-contact.svg", "man reading a book to a girl", "Case contacts", "Volunteers can record case contacts and learning hours."],
+        ["court-report.svg", "judge raising a gavel", "Court reports", "Volunteers, supervisors, and admins can generate a court report for any case with all recorded case contacts pre-filled."],
+        ["reimbursement.svg", "car with two people", "Reimbursements", "Volunteers can submit reimbursement requests and admins can generate reports."],
+        ["add-case.svg", "file folders and file cabinet", "Add cases", "Supervisors and administrators can add cases and assign volunteers."],
+        ["spreadsheets.svg", "computer screen with graphs and charts", "Exportable data", "All CASA data is easily exportable in CSV format."],
+        ["communicate.svg", "woman holding a phone with a notification alert", "Communication", "Easily communicate with volunteers by email, SMS, or both."]
+      ] %>
+      <div class="mt-16 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
+        <% features.each do |img, alt, title, desc| %>
+          <div class="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <%= image_tag img, alt: alt, class: "mx-auto h-40 w-auto" %>
+            <h3 class="mt-5 text-lg font-semibold text-slate-900"><%= title %></h3>
+            <p class="mt-2 text-sm text-slate-600"><%= desc %></p>
+          </div>
+        <% end %>
+      </div>
+    </section>
+
+    <section id="testimonials" class="bg-brand-600 py-20 text-white">
+      <div class="mx-auto max-w-5xl px-6">
+        <h2 class="text-center text-3xl font-bold tracking-tight sm:text-4xl">Testimonials</h2>
+        <div class="mt-12 grid gap-8 md:grid-cols-2">
+          <figure class="rounded-2xl bg-white/10 p-6 ring-1 ring-white/15">
+            <blockquote class="text-lg leading-relaxed">“The tracker has helped us streamline our processes, and we no longer have to worry about losing track of important documents.”</blockquote>
+            <figcaption class="mt-4 text-sm font-semibold text-white/80">— Sarah B. · Program Manager</figcaption>
+          </figure>
+          <figure class="rounded-2xl bg-white/10 p-6 ring-1 ring-white/15">
+            <blockquote class="text-lg leading-relaxed">“Thanks to the tracker, we can now make quicker decisions and effectively monitor our cases, resulting in a more pleasant experience for our volunteers.”</blockquote>
+            <figcaption class="mt-4 text-sm font-semibold text-white/80">— Nancy K. · Office Manager</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="organizations" class="mx-auto max-w-7xl px-6 py-20">
+      <h2 class="text-center text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">CASA organizations powered by our app</h2>
+      <div class="mt-12 grid grid-cols-2 items-start gap-x-8 gap-y-12 sm:grid-cols-3 lg:grid-cols-4">
+        <% @casa_logos.each do |org| %>
+          <div class="flex flex-col items-center gap-3 text-center">
+            <%= image_tag org.logo, class: "org_logo h-24 w-auto object-contain" %>
+            <span class="text-sm font-medium text-slate-600"><%= org.display_name %></span>
+          </div>
+        <% end %>
+      </div>
+    </section>
+
+    <section id="contact" class="bg-slate-900 py-20 text-white">
+      <div class="mx-auto max-w-2xl px-6 text-center">
+        <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Want to use the CASA volunteer tracking app?</h2>
+        <p class="mt-4 text-lg text-white/80">Have questions? Email us at <a href="mailto:casa@rubyforgood.org?Subject=CASA%20Interest" class="font-medium text-brand-300 hover:text-brand-200">casa@rubyforgood.org</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-200 bg-slate-50 py-12">
+    <div class="mx-auto flex max-w-7xl flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between">
+      <div class="text-lg font-bold text-slate-700">casavolunteertracking.org</div>
+      <div class="text-sm text-slate-500">
+        Lovingly built by <%= link_to "Ruby for Good", "http://rubyforgood.org/", class: "font-medium text-brand-600 hover:text-brand-700" %>.
+        <%= link_to "Data illustrations by Storyset", "https://storyset.com/data", class: "hover:text-slate-700 hover:underline" %>.
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

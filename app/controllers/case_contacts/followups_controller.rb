@@ -1,0 +1,42 @@
+class CaseContacts::FollowupsController < ApplicationController
+  after_action :verify_authorized
+
+  def create
+    case_contact = CaseContact.joins(:creator).where(users: {casa_org_id: current_organization&.id}).find(params[:case_contact_id])
+    authorize Followup.new(case_contact: case_contact)
+    note = simple_followup_params[:note].presence
+    FollowupService.create_followup(case_contact, current_user, note)
+
+    respond_to do |format|
+      format.html { redirect_back_or_to(case_contact.casa_case ? casa_case_path(case_contact.casa_case) : case_contacts_path) }
+      format.json { head :no_content }
+    end
+  end
+
+  def resolve
+    @followup = Followup.in_organization(current_organization).find(params[:id])
+    authorize @followup
+
+    @followup.resolved!
+    create_notification
+
+    respond_to do |format|
+      format.html { redirect_back_or_to(@followup.case_contact.casa_case ? casa_case_path(@followup.case_contact.casa_case) : case_contacts_path) }
+      format.json { head :no_content }
+    end
+  end
+
+  private
+
+  def simple_followup_params
+    params.permit(:note)
+  end
+
+  def create_notification
+    recipients = [@followup.case_contact.creator, @followup.creator].compact.uniq(&:id).reject { |user| user.id == current_user.id }
+    return if recipients.empty?
+    FollowupResolvedNotifier
+      .with(followup: @followup, created_by: current_user)
+      .deliver(recipients)
+  end
+end

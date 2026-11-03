@@ -1,0 +1,77 @@
+require "rails_helper"
+
+RSpec.describe "Learning Hours Index", type: :system do
+  let!(:supervisor) { create(:supervisor, :with_volunteers) }
+  let!(:volunteer) { supervisor.volunteers.first }
+  let!(:learning_hours) { create_list(:learning_hour, 2, user: volunteer) }
+
+  before do
+    sign_in user
+  end
+
+  context "when the user is a volunteer" do
+    let(:user) { volunteer }
+
+    it "displays the volunteer learning hours" do
+      visit learning_hours_path
+      expect(page).to have_content("Learning hours")
+      expect(page).to have_content("Title")
+      expect(page).to have_content("Time spent")
+      expect(page).to have_link("Record learning hours", href: new_learning_hour_path)
+    end
+  end
+
+  context "when the user is a supervisor or admin" do
+    let(:user) { supervisor }
+    let(:zero_hour_volunteer) { supervisor.volunteers.second }
+
+    before do
+      visit learning_hours_path
+    end
+
+    it "displays a list of volunteers and the learning hours they completed" do
+      expect(page).to have_content("Learning hours")
+      expect(page).to have_content("Volunteer")
+      expect(page).to have_content(volunteer.display_name)
+      expect(page).to have_content("Time completed")
+      expect(page).to have_content("#{volunteer.learning_hours.sum(:duration_hours)} hours")
+    end
+
+    it "displays assigned volunteers with no learning hours as zero hours" do
+      expect(page).to have_content(zero_hour_volunteer.display_name)
+
+      within("tr", text: zero_hour_volunteer.display_name) do
+        expect(page).to have_content("0 hours 0 minutes")
+      end
+    end
+
+    it "when clicking on a volunteer's name it redirects to the `learning_hours_volunteer_path` for the volunteer" do
+      click_on volunteer.display_name
+      expect(page).to have_current_path(learning_hours_volunteer_path(volunteer.id))
+    end
+
+    RSpec.shared_examples_for "functioning sort buttons" do
+      it "sorts table columns" do
+        expect(page).to have_selector("tr:nth-child(1)", text: expected_first_ordered_value)
+
+        find("th", text: column_to_sort).click
+
+        expect(page).to have_selector("th.sorting_asc", text: column_to_sort)
+        expect(page).to have_selector("tr:nth-child(1)", text: expected_last_ordered_value)
+      end
+    end
+
+    it "shows the paginated roster summary" do
+      expect(page).to have_content("Showing")
+    end
+
+    it "filters the roster by volunteer name" do
+      visit learning_hours_path(search: volunteer.display_name)
+
+      within("table") do
+        expect(page).to have_content(volunteer.display_name)
+        expect(page).not_to have_content(zero_hour_volunteer.display_name)
+      end
+    end
+  end
+end

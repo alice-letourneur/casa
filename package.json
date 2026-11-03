@@ -2,38 +2,63 @@
   "name": "casa",
   "private": true,
   "scripts": {
-    "test:cypress": "$(npm bin)/cypress run",
-    "test": "standard && jest",
-    "test:e2e": "cypress open",
+    "test": "jest",
     "lint": "standard",
-    "lint:fix": "standard --fix"
+    "lint:fix": "standard --fix",
+    "toc": "markdown-toc -i README.md",
+    "build": "./bin/asset_bundling_scripts/build_js.js",
+    "build:dev": "./bin/asset_bundling_scripts/build_js.js --watch",
+    "build:css": "tailwindcss -i ./app/assets/stylesheets/tailwind.css -o ./app/assets/builds/tailwind.css --minify",
+    "build:css:dev": "tailwindcss -i ./app/assets/stylesheets/tailwind.css -o ./app/assets/builds/tailwind.css --watch"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^5.14.0",
-    "@rails/actioncable": "^6.0.0",
-    "@rails/activestorage": "^6.0.0",
-    "@rails/ujs": "^6.0.0",
-    "@rails/webpacker": "4.2.2",
-    "bootstrap": "4.3.1",
-    "bootstrap-datepicker": "^1.9.0",
-    "bootstrap-select": "^1.13.18",
-    "datatables.net-dt": "^1.10.20",
-    "jquery": "^3.5.0",
+    "@babel/core": "^7.29.7",
+    "@fortawesome/fontawesome-free": "^7.3.1",
+    "@hotwired/stimulus": "^3.2.2",
+    "@hotwired/turbo-rails": "^8.0.23",
+    "@popperjs/core": "^2.11.8",
+    "@rails/actioncable": "^8.1.400",
+    "@rails/actiontext": "^8.1.300",
+    "@rails/activestorage": "^8.1.400",
+    "@rails/ujs": "^7.1.600",
+    "@stimulus-components/rails-nested-form": "^5.0.0",
+    "@tailwindcss/cli": "^4.3.2",
+    "add-to-calendar-button": "^3.1.0",
+    "datatables.net-dt": "^1.13.11",
+    "esbuild": "^0.28.2",
+    "jquery": "^3.7.1",
+    "js-cookie": "^3.0.8",
+    "jstz": "^2.1.1",
+    "lodash": "^4.18.1",
     "popper.js": "^1.16.1",
-    "select2": "^4.0.13",
-    "turbolinks": "^5.2.0"
+    "strftime": "^0.10.3",
+    "sweetalert2": "^11.3.5",
+    "tailwindcss": "^4.3.3",
+    "tom-select": "^2.6.1",
+    "trix": "^2.1.19"
   },
   "version": "0.1.0",
   "devDependencies": {
-    "cypress": "^4.12.1",
-    "jest": "^26.4.2",
-    "standard": "^14.3.4",
-    "start-server-and-test": "^1.11.5",
-    "webpack-dev-server": "^3.10.3"
+    "@babel/preset-env": "^7.29.7",
+    "faker": "^5.5.3",
+    "jest": "^30.4.2",
+    "jest-environment-jsdom": "^30.5.2",
+    "markdown-toc": "^1.2.0",
+    "standard": "^17.1.2",
+    "start-server-and-test": "^2.1.5"
   },
   "standard": {
+    "globals": [
+      "$",
+      "jQuery",
+      "Turbo"
+    ],
     "ignore": [
-      "cypress"
+      "app/assets/builds/**/*",
+      "app/javascript/controllers/index.js"
     ]
+  },
+  "engines": {
+    "node": "24.x"
   }
 }

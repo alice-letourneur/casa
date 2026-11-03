@@ -1,28 +1,49 @@
 class ImportsController < ApplicationController
-  include ActionView::Helpers::UrlHelper
+  require "csv"
 
-  before_action :authenticate_user!
-  before_action :must_be_admin
+  include ActionView::Helpers::UrlHelper
+  layout "casa_app"
+  before_action -> { @active_nav = "settings" }
+  before_action :failed_csv_service, only: [:create, :download_failed]
+  after_action :verify_authorized
+  skip_after_action :verify_policy_scoped # TODO: index should call policy_scope; remove this skip once it does
+
+  ERR_FAILED_IMPORT_NOTE = "Note: An additional 'error' column has been added to the file. " \
+    "Please note the failure reason and remove the column when resubmitting."
+  ERR_FILE_NOT_ATTACHED = "You must attach a CSV file in order to import information!"
+  ERR_FILE_NOT_FOUND = "CSV import file not found."
+  ERR_FILE_EMPTY = "File can not be empty."
+  ERR_INVALID_HEADER = "Looks like this CSV contains invalid formatting. " \
+    "Please download an example CSV for reference and try again."
 
   def index
+    authorize :import
     @import_type = params.fetch(:import_type, "volunteer")
     @import_error = session[:import_error]
+    @sms_opt_in_warning = session[:sms_opt_in_warning]
     session[:import_error] = nil
+    session[:sms_opt_in_warning] = nil
   end
 
   def create
-    import = import_from_csv(params[:import_type], params[:file], current_user.casa_org_id)
+    authorize :import
+    @failed_csv_service.cleanup
+
+    import = import_from_csv(params[:import_type], params[:sms_opt_in], uploaded_csv_path, current_user.casa_org_id)
     message = import[:message]
 
     # If there were failed imports
     if import[:exported_rows]
-      message << "<p class='mt-4'>" + link_to("Click here to download failed rows.", download_failed_imports_path) +
+      @failed_csv_service.failed_rows = import[:exported_rows]
+      @failed_csv_service.store
+      message << "<p class='mt-4'>" + link_to("Click here to download failed rows.", download_failed_imports_path(import_type: params[:import_type])) +
         "</p>" + "<p>#{ERR_FAILED_IMPORT_NOTE}</p>"
-      session[:exported_rows] = import[:exported_rows]
     end
 
     if import[:type] == :error
       session[:import_error] = message
+    elsif import[:type] == :sms_opt_in_warning
+      session[:sms_opt_in_warning] = import[:import_type]
     # Only use flash for success messages. Otherwise may cause CookieOverflow
     else
       flash[:success] = message
@@ -32,20 +53,21 @@ class ImportsController < ApplicationController
   end
 
   def download_failed
-    data = session[:exported_rows]
-    session[:exported_rows] = nil
-    send_data data, format: :csv, filename: "failed_rows.csv"
+    authorize :import
+    csv_contents = @failed_csv_service.read
+
+    send_data csv_contents, format: :csv, filename: "failed_rows.csv"
   end
 
   private
 
-  ERR_FAILED_IMPORT_NOTE = "Note: An additional 'error' column has been added to the file. " \
-    "Please note the failure reason and remove the column when resubmitting."
-  ERR_FILE_NOT_ATTACHED = "You must attach a CSV file in order to import information!"
-  ERR_FILE_NOT_FOUND = "CSV import file not found."
-  ERR_FILE_EMPTY = "File can not be empty."
-  ERR_INVALID_HEADER = "Looks like this CSV contains invalid formatting. " \
-    "Please download an example CSV for reference and try again."
+  def failed_csv_service(failed_rows: "")
+    @failed_csv_service = FailedImportCsvService.new(
+      failed_rows: failed_rows,
+      import_type: params[:import_type],
+      user: current_user
+    )
+  end
 
   def header
     {
@@ -59,10 +81,14 @@ class ImportsController < ApplicationController
     file_header == header[import_type]
   end
 
-  def import_from_csv(import_type, file, org_id)
+  def import_from_csv(import_type, sms_opt_in, file, org_id)
     validated_file = validate_file(file, import_type)
 
     return validated_file unless validated_file.nil?
+
+    if requires_sms_opt_in(file, import_type, sms_opt_in)
+      return {type: :sms_opt_in_warning, import_type: import_type}
+    end
 
     case import_type
     when "volunteer"
@@ -77,6 +103,13 @@ class ImportsController < ApplicationController
     end
   end
 
+  # Only a real multipart upload is accepted. A plain string `file` param would otherwise be treated as a
+  # path on the server and opened.
+  def uploaded_csv_path
+    file = params[:file]
+    file.path if file.is_a?(ActionDispatch::Http::UploadedFile)
+  end
+
   def validate_file(file, import_type)
     # Validate that file is attached
     if file.blank?
@@ -85,7 +118,7 @@ class ImportsController < ApplicationController
 
     # Validate that file exists
     unless File.file?(file)
-      return {type: :error, message: ERR_FILE_NOT_FOUND + ": #{file}"}
+      return {type: :error, message: ERR_FILE_NOT_FOUND}
     end
 
     # Validate that the file is not empty
@@ -98,10 +131,29 @@ class ImportsController < ApplicationController
 
     unless header_valid?(file_header, import_type)
       message = "#{ERR_INVALID_HEADER}<p class='mt-4'>" \
-        "<b>Expected Header</b>: #{header[import_type].join(",")}.</p>" \
-        "<p><b>Received Header</b>: #{file_header.join(",")}</p>"
+        "<b>Expected Header</b>: #{header[import_type].join(", ")}.</p>" \
+        "<p><b>Received Header</b>: #{file_header.join(", ")}</p>"
 
       {type: :error, message: message}
     end
+  end
+
+  def requires_sms_opt_in(file, import_type, sms_opt_in)
+    if (import_type == "volunteer" || import_type == "supervisor") && import_contains_phone_numbers(file)
+      return sms_opt_in != "1"
+    end
+
+    false
+  end
+
+  def import_contains_phone_numbers(file)
+    CSV.foreach(file, headers: true, header_converters: :symbol) do |row|
+      phone_number = row[:phone_number]
+      if !phone_number.nil? && !phone_number.strip.empty?
+        return true
+      end
+    end
+
+    false
   end
 end

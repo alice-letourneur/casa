@@ -1,0 +1,34 @@
+class NotificationsController < ApplicationController
+  layout "casa_app"
+
+  after_action :verify_authorized
+  skip_after_action :verify_policy_scoped # TODO: index should call policy_scope; remove this skip once it does
+  before_action :set_notification, only: %i[mark_as_read]
+
+  def index
+    authorize Noticed::Notification, policy_class: NotificationPolicy
+
+    @deploy_time = Health.instance.latest_deploy_time
+    notifications = current_user.notifications.includes([:event]).newest_first
+    # Hide notifications whose target record is gone (e.g. a deleted followup); they would otherwise
+    # render as an empty item. renderable? is a Ruby check, so drop them by id to keep a relation for
+    # the date-split helpers.
+    hidden_ids = notifications.reject { |notification| notification.event&.renderable? }.map(&:id)
+    @notifications = hidden_ids.any? ? notifications.where.not(id: hidden_ids) : notifications
+    # includes(:patch_note_type) because the view groups the notes by type name.
+    @patch_notes = PatchNote.notes_available_for_user(current_user).includes(:patch_note_type)
+  end
+
+  def mark_as_read
+    authorize @notification, policy_class: NotificationPolicy
+
+    @notification.mark_as_read unless @notification.read?
+    redirect_to @notification.event.url
+  end
+
+  private
+
+  def set_notification
+    @notification = Noticed::Notification.find(params[:id])
+  end
+end

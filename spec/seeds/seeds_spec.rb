@@ -6,6 +6,7 @@ def empty_ar_classes
     AllCasaAdmin,
     CasaAdmin,
     CasaCase,
+    Judge,
     CasaOrg,
     CaseAssignment,
     CaseContact,
@@ -14,21 +15,24 @@ def empty_ar_classes
     Supervisor,
     SupervisorVolunteer,
     User,
-    Volunteer
+    LearningHour,
+    HearingType,
+    Volunteer,
+    CaseCourtOrder
   ]
   ar_classes.select { |klass| klass.count == 0 }.map(&:name)
 end
 
 RSpec.describe "Seeds" do
   describe "test development DB" do
-    before do
-      Rails.application.load_tasks
-      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
-    end
-
     it "successfully populates all necessary tables" do
+      Rails.application.load_tasks if Rake::Task.tasks.empty?
+      allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("test"))
+
+      Prosopite.pause
       ActiveRecord::Tasks::DatabaseTasks.load_seed
       expect(empty_ar_classes).to eq([])
+      Prosopite.resume
     end
   end
 end

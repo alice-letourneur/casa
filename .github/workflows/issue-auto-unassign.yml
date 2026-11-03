@@ -1,0 +1,30 @@
+on:
+  schedule:
+    # * is a special character in YAML so you have to quote this string
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Enable manual runs of the bot
+
+jobs:
+  unassign_issues:
+    runs-on: ubuntu-latest
+    name: Unassign issues
+    steps:
+      - name: Unassign issues
+        uses: rubyforgood/unassign-issues@f3d8461c2a3ea67cc4a015ca50737a4f865460d7 # v1.3
+        id: unassign_issues
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          unassign_inactive_in_hours: 360  # 15 days
+          warning_inactive_in_hours: 240  # 10 days
+          office_hours: 'Tuesdays 6-8 PM PST'
+          warning_inactive_message: 'If you are still working on this, comment here to tell the bot to give you more time'
+      - name: Print the unassigned issues
+        run: echo "Unassigned issues = ${{steps.unassign_issues.outputs.unassigned_issues}}"
+      - name: Print the warned issues
+        run: echo "Warned issues = ${{steps.unassign_issues.outputs.warned_issues}}"
+      # The "move unassigned issues from In Progress to To Do" step was removed:
+      # it used bjthompson805/move-issues, which drives the retired Projects
+      # (classic) REST API (/projects/columns/{id}/cards). Columns 8461148 and
+      # 15690587 no longer resolve, so the step 404'd on every nightly run and
+      # failed the whole workflow. Re-add via the Projects v2 GraphQL API
+      # (e.g. actions/add-to-project) if the board move is still wanted.

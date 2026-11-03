@@ -1,0 +1,62 @@
+class CaseGroupsController < ApplicationController
+  layout "casa_app"
+  before_action :require_organization!
+  before_action -> { @active_nav = "cases" }
+  before_action :set_case_group, only: %i[edit update destroy]
+
+  def index
+    authorize CaseGroup
+    @case_groups = policy_scope(CaseGroup).includes(:casa_cases)
+  end
+
+  def new
+    @case_group = CaseGroup.new(casa_org: current_organization)
+    authorize @case_group
+  end
+
+  def edit
+    authorize @case_group
+  end
+
+  def create
+    @case_group = current_organization.case_groups.build(case_group_params)
+    authorize @case_group
+
+    if @case_group.save
+      redirect_to case_groups_path, notice: "Case group created!"
+    else
+      render :new, status: :unprocessable_content
+    end
+  end
+
+  def update
+    authorize @case_group
+
+    if @case_group.update(case_group_params)
+      redirect_to case_groups_path, notice: "Case group updated!"
+    else
+      render :edit, status: :unprocessable_content
+    end
+  end
+
+  def destroy
+    authorize @case_group
+
+    @case_group.destroy
+    redirect_to case_groups_path, notice: "Case group deleted!"
+  end
+
+  private
+
+  def case_group_params
+    permitted = params.require(:case_group).permit(:name, casa_case_ids: [])
+    if permitted.key?(:casa_case_ids)
+      permitted[:casa_case_ids] = current_organization.casa_cases.where(id: permitted[:casa_case_ids]).pluck(:id)
+    end
+    permitted
+  end
+
+  def set_case_group
+    @case_group = policy_scope(CaseGroup).find(params[:id])
+  end
+end

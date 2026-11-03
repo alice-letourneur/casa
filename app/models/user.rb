@@ -3,41 +3,70 @@
 # model for all user roles: volunteer supervisor casa_admin inactive
 class User < ApplicationRecord
   include Roles
+  include Api
+  include ByOrganizationScope
+  include DateHelper
 
-  has_paper_trail
-  devise :database_authenticatable, :invitable, :recoverable, :validatable, :timeoutable
+  before_save :normalize_phone_number
+  after_create :skip_email_confirmation_upon_creation
+  after_create :create_preference_set
+  before_update :record_previous_email
 
-  validates :email, presence: true
-  validates :display_name, presence: true
+  validates_with UserValidator
+
+  devise :database_authenticatable, :invitable, :recoverable, :validatable, :timeoutable, :trackable, :confirmable
 
   belongs_to :casa_org
 
-  has_many :case_assignments, foreign_key: "volunteer_id", dependent: :destroy
-  has_many :casa_cases, through: :case_assignments
+  # Volunteers are deactivated, not destroyed: Volunteer#deactivate sets the
+  # user and each case_assignment inactive while preserving the rows for
+  # audit/history. restrict_with_error catches anything that tries to
+  # hard-delete a volunteer that still has assignments, rather than silently
+  # cascading and losing the history. Issue #6911.
+  has_many :case_assignments, foreign_key: "volunteer_id", dependent: :restrict_with_error
+  has_many :casa_cases, -> { where(case_assignments: {active: true}) }, through: :case_assignments
+
   has_many :case_contacts, foreign_key: "creator_id"
 
-  has_many :supervisor_volunteers, foreign_key: "supervisor_id"
-  has_many :volunteers, -> { includes(:supervisor_volunteer).order(:display_name) },
-    through: :supervisor_volunteers
+  has_many :followups, foreign_key: "creator_id"
+
+  has_many :notifications, as: :recipient, dependent: :destroy, class_name: "Noticed::Notification"
+  has_many :sent_emails, dependent: :destroy
+
+  has_many :other_duties, foreign_key: "creator_id", dependent: :destroy
+
+  has_many :learning_hours, dependent: :destroy
 
   has_one :supervisor_volunteer, -> {
     where(is_active: true)
   }, foreign_key: "volunteer_id", dependent: :destroy
   has_one :supervisor, through: :supervisor_volunteer
+  has_one :preference_set, dependent: :destroy
 
-  scope :volunteers_with_no_supervisor, lambda { |org|
-    joins("left join supervisor_volunteers "\
-          "on supervisor_volunteers.volunteer_id = users.id "\
-          "and supervisor_volunteers.is_active")
-      .active
-      .in_organization(org)
-      .where(supervisor_volunteers: {id: nil})
-  }
+  has_many :user_sms_notification_events
+  has_many :sms_notification_events, through: :user_sms_notification_events
+  has_many :notes, as: :notable
+  has_one :address, dependent: :destroy
+  has_many :user_languages
+  has_many :languages, through: :user_languages
+  has_many :login_activities, as: :user
+
+  accepts_nested_attributes_for :user_sms_notification_events, allow_destroy: true
+  # The mailing address is optional (invite form, edit form). An all-blank submission must not persist
+  # an empty addresses row -- only build/keep the record once a part is filled in. (Editing an existing
+  # address is unaffected: its :id is present, so :all_blank never rejects it.)
+  accepts_nested_attributes_for :address, reject_if: :all_blank, allow_destroy: true
 
   scope :active, -> { where(active: true) }
 
+  scope :inactive, -> { where(active: false) }
+
   scope :in_organization, lambda { |org|
     where(casa_org_id: org.id)
+  }
+
+  scope :no_recent_sign_in, -> {
+    active.where("last_sign_in_at <= ? or last_sign_in_at is null", 30.days.ago)
   }
 
   def casa_admin?
@@ -52,18 +81,26 @@ class User < ApplicationRecord
     is_a?(Volunteer)
   end
 
-  def policy_class
-    case type
-    when Volunteer
-      VolunteerPolicy
-    else
-      UserPolicy
-    end
+  def actively_assigned_and_active_cases
+    casa_cases.active.merge(CaseAssignment.active)
+  end
+
+  def active_volunteers
+    volunteers.active.size
+  end
+
+  def create_preference_set
+    self.preference_set = PreferenceSet.create
   end
 
   # all contacts this user has with this casa case
   def case_contacts_for(casa_case_id)
-    found_casa_case = casa_cases.find { |cc| cc.id == casa_case_id }
+    found_casa_case = actively_assigned_and_active_cases.find { |cc| cc.id == casa_case_id }
+
+    if found_casa_case.nil?
+      raise ActiveRecord::RecordNotFound.new "Could not find case with id: #{casa_case_id} belonging to this user"
+    end
+
     found_casa_case.case_contacts.filter { |contact| contact.creator_id == id }
   end
 
@@ -75,30 +112,28 @@ class User < ApplicationRecord
     case_contacts.where(contact_made: true).order(:occurred_at).last
   end
 
-  def volunteers_serving_transistion_aged_youth
-    volunteers.includes(:casa_cases)
-      .where(casa_cases: {transition_aged_youth: true}).size
+  # Wrong? Linda/Shen/Joshua - unassigned / inactive volunteers
+  def volunteers_serving_transition_aged_youth
+    volunteers.includes(
+      case_assignments: :casa_case
+    ).where(
+      case_assignments: {active: true}, casa_cases: {active: true, birth_month_year_youth: ..CasaCase::TRANSITION_AGE.years.ago}
+    ).size
   end
 
-  def no_contact_for_two_weeks
+  def no_attempt_for_two_weeks
     # Get ACTIVE volunteers that have ACTIVE supervisor assignments with at least one ACTIVE case
     # 1st condition: Volunteer has not created a contact AT ALL within the past 14 days
-    # 2nd condition: Volunteer has ONLY created contacts in which contact_made = false within the past 14 days
+    # One query for who has a recent contact, rather than loading or querying every volunteer's contacts.
+    recently_attempted_ids = CaseContact
+      .where(creator_id: volunteers.map(&:id), created_at: 14.days.ago..)
+      .distinct.pluck(:creator_id).to_set
 
-    volunteers
-      .includes(:case_assignments)
-      .joins("LEFT JOIN case_contacts cc on cc.creator_id = users.id AND cc.occurred_at > (CURRENT_DATE - INTERVAL '14 days')")
-      .having("SUM(CASE WHEN cc.contact_made IS NULL THEN 1 WHEN cc.contact_made = false THEN 1 ELSE 0 END) = COUNT(users.id)")
-      .group("users.id, supervisor_volunteers_users.id, case_assignments.id")
-      .where(active: true)
-      .where(supervisor_volunteers: {is_active: true})
-      .where(case_assignments: {is_active: true})
-      .length
-  end
-
-  def past_names
-    # get past_names from paper_trail gem, version_limit is 10 so no performance concerns
-    versions.map { |version| version&.reify&.display_name }
+    volunteers.to_a.count do |volunteer|
+      volunteer.supervisor.active? &&
+        volunteer.case_assignments.any?(&:active?) &&
+        !recently_attempted_ids.include?(volunteer.id)
+    end
   end
 
   # Generate a Devise reset_token, used for the account_setup mailer. This happens automatically
@@ -120,65 +155,90 @@ class User < ApplicationRecord
     super && active
   end
 
-  # Called by Devise to generate an error message when a user is not active.
-  def inactive_message
-    if !active
-      admin_self_deactivated? ? :admin_self_deactivated : :inactive
-    else
-      super
+  def serving_transition_aged_youth?
+    actively_assigned_and_active_cases.is_transitioned.any?
+  end
+
+  def record_previous_email
+    if email_changed? && !old_emails.include?(email_was)
+      old_emails.push(email_was)
     end
   end
 
-  def serving_transition_aged_youth?
-    casa_cases.where(transition_aged_youth: true).any?
+  def filter_old_emails!(previous_email)
+    updated_emails = old_emails.reject { |old| old == previous_email }
+    update(old_emails: updated_emails)
   end
 
-  def admin_self_deactivated?
-    return false if !casa_admin? || active
-    id.to_s == last_deactivated_by
+  def skip_email_confirmation_upon_creation
+    skip_confirmation!
+    confirm
   end
 
-  def last_deactivated_by
-    versions.where(event: "update").reverse_each do |version|
-      return version.whodunnit if version.reify.active
+  def send_email_changed_notification?
+    false
+  end
+
+  def after_confirmation
+    send_email_changed_notification
+  end
+
+  private
+
+  def normalize_phone_number
+    if phone_number&.length == 10
+      self.phone_number = "+1#{phone_number}"
     end
   end
 end
-
 # == Schema Information
 #
 # Table name: users
 #
-#  id                     :bigint           not null, primary key
-#  active                 :boolean          default(TRUE)
-#  display_name           :string           default("")
-#  email                  :string           default(""), not null
-#  encrypted_password     :string           default(""), not null
-#  invitation_accepted_at :datetime
-#  invitation_created_at  :datetime
-#  invitation_limit       :integer
-#  invitation_sent_at     :datetime
-#  invitation_token       :string
-#  invitations_count      :integer          default(0)
-#  invited_by_type        :string
-#  remember_created_at    :datetime
-#  reset_password_sent_at :datetime
-#  reset_password_token   :string
-#  type                   :string
-#  created_at             :datetime         not null
-#  updated_at             :datetime         not null
-#  casa_org_id            :bigint           not null
-#  invited_by_id          :bigint
+#  id                            :bigint           not null, primary key
+#  active                        :boolean          default(TRUE)
+#  confirmation_sent_at          :datetime
+#  confirmation_token            :string
+#  confirmed_at                  :datetime
+#  current_sign_in_at            :datetime
+#  current_sign_in_ip            :string
+#  date_of_birth                 :datetime
+#  display_name                  :string           default(""), not null
+#  email                         :string           default(""), not null
+#  encrypted_password            :string           default(""), not null
+#  invitation_accepted_at        :datetime
+#  invitation_created_at         :datetime
+#  invitation_limit              :integer
+#  invitation_sent_at            :datetime
+#  invitation_token              :string
+#  invitations_count             :integer          default(0)
+#  invited_by_type               :string
+#  last_sign_in_at               :datetime
+#  last_sign_in_ip               :string
+#  monthly_learning_hours_report :boolean          default(FALSE), not null
+#  old_emails                    :string           default([]), is an Array
+#  phone_number                  :string           default("")
+#  receive_email_notifications   :boolean          default(TRUE)
+#  receive_reimbursement_email   :boolean          default(FALSE)
+#  receive_sms_notifications     :boolean          default(FALSE), not null
+#  reset_password_sent_at        :datetime
+#  reset_password_token          :string
+#  sign_in_count                 :integer          default(0), not null
+#  type                          :string
+#  unconfirmed_email             :string
+#  created_at                    :datetime         not null
+#  updated_at                    :datetime         not null
+#  casa_org_id                   :bigint           not null
+#  invited_by_id                 :bigint
 #
 # Indexes
 #
-#  index_users_on_casa_org_id                        (casa_org_id)
-#  index_users_on_email                              (email) UNIQUE
-#  index_users_on_invitation_token                   (invitation_token) UNIQUE
-#  index_users_on_invitations_count                  (invitations_count)
-#  index_users_on_invited_by_id                      (invited_by_id)
-#  index_users_on_invited_by_type_and_invited_by_id  (invited_by_type,invited_by_id)
-#  index_users_on_reset_password_token               (reset_password_token) UNIQUE
+#  index_users_on_casa_org_id           (casa_org_id)
+#  index_users_on_confirmation_token    (confirmation_token) UNIQUE
+#  index_users_on_email                 (email) UNIQUE
+#  index_users_on_invitation_token      (invitation_token) UNIQUE
+#  index_users_on_invited_by_id         (invited_by_id)
+#  index_users_on_reset_password_token  (reset_password_token) UNIQUE
 #
 # Foreign Keys
 #

@@ -1,47 +1,108 @@
 # frozen_string_literal: true
 
 class SupervisorsController < ApplicationController
-  # Uses authenticate_user to redirect if no user is signed in
-  # and must_be_admin_or_supervisor to check user's role is appropriate
-  before_action :authenticate_user!
-  before_action :must_be_admin_or_supervisor
-  before_action :must_be_admin, only: [:new, :create]
-  before_action :available_volunteers, only: [:edit, :update]
-  before_action :set_supervisor, only: [:edit, :update]
+  include SmsBodyHelper
+
+  before_action :available_volunteers, only: [:edit, :update, :index]
+  before_action :set_supervisor, only: [:edit, :update, :activate, :deactivate, :resend_invitation, :change_to_admin]
+  before_action :all_volunteers_ever_assigned, only: [:update]
+  before_action :supervisor_has_unassigned_volunteers, only: [:edit]
+  before_action :set_active_nav, only: [:index, :new, :create, :edit, :update, :activate, :deactivate]
+
+  after_action :verify_authorized
 
   def index
-    @supervisors = policy_scope(current_organization.supervisors)
+    authorize Supervisor
+    @status = %w[active inactive all].include?(params[:status]) ? params[:status] : "active"
+    supervisors = policy_scope(current_organization.supervisors)
+    supervisors = supervisors.where(active: true) if @status == "active"
+    supervisors = supervisors.where(active: false) if @status == "inactive"
+    # no_attempt_for_two_weeks walks each supervisor's volunteers and their case assignments.
+    @supervisors = supervisors.includes(volunteers: :case_assignments).order(:display_name)
+    # Active supervisors for the inline "assign supervisor" control in the volunteers-without-
+    # supervisors table (independent of the roster status filter above).
+    @active_supervisors = current_organization.supervisors.active.order(:display_name)
+    @casa_cases = current_organization.casa_cases.missing_court_dates
+    render :index, layout: "casa_app"
   end
 
   def new
+    authorize Supervisor
     @supervisor = Supervisor.new
+    render layout: "casa_app"
   end
 
   def create
+    authorize Supervisor
     @supervisor = Supervisor.new(supervisor_params.merge(supervisor_values))
 
     if @supervisor.save
-      @supervisor.invite!
-      redirect_to edit_supervisor_path(@supervisor)
+      @supervisor.invite!(current_user)
+      # call short io api here
+      raw_token = @supervisor.raw_invitation_token
+      invitation_url = Rails.application.routes.url_helpers.accept_user_invitation_url(invitation_token: raw_token, host: request.base_url)
+      hash_of_short_urls = @supervisor.phone_number.blank? ? {0 => nil, 1 => nil} : handle_short_url([invitation_url, request.base_url + "/users/edit"])
+      body_msg = account_activation_msg("supervisor", hash_of_short_urls)
+      sms_status = deliver_sms_to @supervisor, body_msg
+      redirect_to edit_supervisor_path(@supervisor), notice: sms_acct_creation_notice("supervisor", sms_status)
     else
-      render new_supervisor_path
+      render :new, status: :unprocessable_content, layout: "casa_app"
     end
   end
 
   def edit
-    redirect_to root_url unless can_view_update_page?
+    authorize @supervisor
+    if params[:include_unassigned] == "true"
+      all_volunteers_ever_assigned
+    end
+    @unassigned_volunteer_count ||= 0
+    render layout: "casa_app"
   end
 
   def update
-    if can_update_fields?
-      if @supervisor.update(update_supervisor_params)
-        redirect_to edit_supervisor_path(@supervisor), notice: "Supervisor was successfully updated."
-      else
-        render :edit
-      end
+    authorize @supervisor
+    if @supervisor.update(update_supervisor_params)
+      notice = check_unconfirmed_email_notice(@supervisor)
+
+      @supervisor.filter_old_emails!(@supervisor.email)
+      redirect_to edit_supervisor_path(@supervisor), notice: notice
     else
-      redirect_to root_url
+      render :edit, status: :unprocessable_content, layout: "casa_app"
     end
+  end
+
+  def activate
+    authorize @supervisor
+    if @supervisor.activate
+      SupervisorMailer.account_setup(@supervisor).deliver
+
+      redirect_to edit_supervisor_path(@supervisor), notice: "Supervisor was activated. They have been sent an email."
+    else
+      render :edit, layout: "casa_app", notice: "Supervisor could not be activated."
+    end
+  end
+
+  def deactivate
+    authorize @supervisor
+    if @supervisor.deactivate
+      redirect_to edit_supervisor_path(@supervisor), notice: "Supervisor was deactivated."
+    else
+      render :edit, layout: "casa_app", notice: "Supervisor could not be deactivated."
+    end
+  end
+
+  def resend_invitation
+    authorize @supervisor
+    @supervisor.invite!
+
+    redirect_to edit_supervisor_path(@supervisor), notice: "Invitation sent"
+  end
+
+  def change_to_admin
+    authorize @supervisor
+    @supervisor.change_to_admin!
+
+    redirect_to edit_casa_admin_path(@supervisor), notice: "Supervisor was changed to Admin."
   end
 
   private
@@ -50,8 +111,21 @@ class SupervisorsController < ApplicationController
     @supervisor = Supervisor.find(params[:id])
   end
 
+  def set_active_nav
+    @active_nav = "supervisors"
+  end
+
+  def all_volunteers_ever_assigned
+    @unassigned_volunteer_count = @supervisor.volunteers_ever_assigned.count - @supervisor.volunteers.count
+    @all_volunteers_ever_assigned = @supervisor.volunteers_ever_assigned
+  end
+
+  def supervisor_has_unassigned_volunteers
+    @supervisor_has_unassigned_volunteers = @supervisor.volunteers_ever_assigned.count > @supervisor.volunteers.count
+  end
+
   def available_volunteers
-    @available_volunteers = Volunteer.volunteers_with_no_supervisor(current_user.casa_org)
+    @available_volunteers = Volunteer.with_no_supervisor(current_user.casa_org).includes(:casa_cases)
   end
 
   def supervisor_values
@@ -59,16 +133,19 @@ class SupervisorsController < ApplicationController
   end
 
   def supervisor_params
-    params.require(:supervisor).permit(:display_name, :email, :active, volunteer_ids: [], supervisor_volunteer_ids: [])
-  end
-
-  def can_view_update_page?
-    # supervisor must be able to view edit supervisor page so they can change volunteer assignments
-    current_user.supervisor? || current_user.casa_admin?
-  end
-
-  def can_update_fields?
-    current_user == @supervisor || current_user.casa_admin?
+    params.require(:supervisor)
+      .permit(
+        :display_name,
+        :email,
+        :old_emails,
+        :phone_number,
+        :active,
+        :monthly_learning_hours_report,
+        :receive_reimbursement_email,
+        :monthly_learning_hours_report,
+        volunteer_ids: [],
+        supervisor_volunteer_ids: []
+      )
   end
 
   def update_supervisor_params

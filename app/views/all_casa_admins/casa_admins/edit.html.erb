@@ -1,0 +1,37 @@
+<% content_for :page_title, "Edit admin" %>
+<% label_class = "mb-1.5 block text-sm font-medium text-slate-700" %>
+<% input_class = "block w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 shadow-sm placeholder:text-slate-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 focus:outline-none" %>
+<div class="px-4 py-6 sm:px-6 lg:px-8">
+  <div class="mx-auto max-w-2xl space-y-6">
+    <%= render "shared/page_header", back: {path: all_casa_admins_casa_org_path(@casa_admin.casa_org), label: "Back to organization"}, title: "Edit admin" %>
+    <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <%= form_with(model: @casa_admin, as: :all_casa_admin, url: all_casa_admins_casa_org_casa_admin_path, class: "space-y-5") do |form| %>
+        <%= render "shared/form_errors", resource: @casa_admin %>
+        <div>
+          <%= form.label :email, "Email", class: label_class %>
+          <%= form.email_field :email, class: input_class %>
+        </div>
+        <% if @casa_admin.persisted? %>
+          <% if @casa_admin.active? %>
+            <div class="flex flex-wrap items-center gap-3">
+              <span class="text-sm text-slate-600">Admin is <span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700"><i class="bi bi-check-circle" aria-hidden="true"></i> Active</span></span>
+              <%= link_to deactivate_all_casa_admins_casa_org_casa_admin_path, method: :patch, class: button_classes(:danger_outline),
+                    data: {confirm: "WARNING: Marking an admin inactive will make them unable to login. Are you sure you want to do this?"} do %>
+                <i class="bi bi-slash-circle" aria-hidden="true"></i> Deactivate
+              <% end %>
+            </div>
+            <div><%= form.submit "Update profile", class: button_classes(:primary) %></div>
+          <% else %>
+            <div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+              Admin was deactivated on: <%= I18n.l(@casa_admin.updated_at, format: :standard, default: nil) %>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <%= link_to "Activate", activate_all_casa_admins_casa_org_casa_admin_path, method: :patch, class: button_classes(:success) %>
+              <%= form.submit "Update profile", class: button_classes(:primary) %>
+            </div>
+          <% end %>
+        <% end %>
+      <% end %>
+    </div>
+  </div>
+</div>

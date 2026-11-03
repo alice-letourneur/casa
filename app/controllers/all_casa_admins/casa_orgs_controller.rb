@@ -1,6 +1,9 @@
 class AllCasaAdmins::CasaOrgsController < AllCasaAdminsController
+  before_action -> { @active_nav = "organizations" }
+
   def show
     @casa_org = CasaOrg.find(params[:id])
+    @casa_org_metrics = AllCasaAdmins::CasaOrgMetrics.new(@casa_org).metrics
   end
 
   def new
@@ -10,11 +13,22 @@ class AllCasaAdmins::CasaOrgsController < AllCasaAdminsController
   def create
     @casa_org = CasaOrg.new(casa_org_params)
 
-    respond_to do |format|
-      if @casa_org.save
-        format.html { redirect_to all_casa_admins_casa_org_path(@casa_org), notice: "CASA Organization was successfully created." }
-      else
-        format.html { render :new }
+    if @casa_org.save
+      @casa_org.generate_defaults
+      respond_to do |format|
+        format.html do
+          redirect_to all_casa_admins_casa_org_path(@casa_org),
+            notice: "CASA Organization was successfully created."
+        end
+
+        format.json do
+          render json: @casa_org, status: :created
+        end
+      end
+    else
+      respond_to do |format|
+        format.html { render :new, status: :unprocessable_content }
+        format.json { render json: @casa_org.errors.full_messages, status: :unprocessable_content }
       end
     end
   end

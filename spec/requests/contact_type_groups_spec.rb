@@ -19,7 +19,7 @@ RSpec.describe "/contact_type_groups", type: :request do
         get new_contact_type_group_path
 
         expect(response).to redirect_to root_path
-        expect(response.request.flash[:notice]).to eq "Sorry, you are not authorized to perform this action."
+        expect(response.request.flash[:alert]).to eq "Sorry, you are not authorized to perform this action."
       end
     end
 
@@ -37,8 +37,8 @@ RSpec.describe "/contact_type_groups", type: :request do
 
     context "logged in as admin user" do
       it "can successfully create a contact type group" do
-        casa_org = create(:casa_org)
-        sign_in create(:casa_admin, casa_org: casa_org)
+        casa_org = build(:casa_org)
+        sign_in build(:casa_admin, casa_org: casa_org)
 
         expect {
           post contact_type_groups_path, params: params
@@ -61,7 +61,7 @@ RSpec.describe "/contact_type_groups", type: :request do
         post contact_type_groups_path, params: params
 
         expect(response).to redirect_to root_path
-        expect(response.request.flash[:notice]).to eq "Sorry, you are not authorized to perform this action."
+        expect(response.request.flash[:alert]).to eq "Sorry, you are not authorized to perform this action."
       end
     end
 
@@ -77,11 +77,28 @@ RSpec.describe "/contact_type_groups", type: :request do
   describe "GET /contact_type_groups/:id/edit" do
     context "logged in as admin user" do
       it "can successfully access a contact type group edit page" do
-        sign_in_as_admin
+        casa_org = create(:casa_org)
+        sign_in create(:casa_admin, casa_org: casa_org)
+        group = create(:contact_type_group, casa_org: casa_org)
 
-        get edit_contact_type_group_path(create(:contact_type_group))
+        get edit_contact_type_group_path(group)
 
         expect(response).to be_successful
+      end
+    end
+
+    context "logged in as admin from a different organization" do
+      it "cannot access another organization's contact type group edit page" do
+        admin_org = create(:casa_org)
+        admin = create(:casa_admin, casa_org: admin_org)
+        other_org = create(:casa_org)
+        other_org_group = create(:contact_type_group, casa_org: other_org)
+
+        sign_in admin
+
+        get edit_contact_type_group_path(other_org_group)
+
+        expect(response).to have_http_status(:not_found)
       end
     end
 
@@ -92,7 +109,7 @@ RSpec.describe "/contact_type_groups", type: :request do
         get edit_contact_type_group_path(create(:contact_type_group))
 
         expect(response).to redirect_to root_path
-        expect(response.request.flash[:notice]).to eq "Sorry, you are not authorized to perform this action."
+        expect(response.request.flash[:alert]).to eq "Sorry, you are not authorized to perform this action."
       end
     end
 
@@ -107,10 +124,11 @@ RSpec.describe "/contact_type_groups", type: :request do
 
   describe "PUT /contact_type_groups/:id" do
     let(:params) { {contact_type_group: {name: "New Group Name", active: false}} }
+
     context "logged in as admin user" do
       it "can successfully update a contact type group" do
-        casa_org = create(:casa_org)
-        sign_in create(:casa_admin, casa_org: casa_org)
+        casa_org = build(:casa_org)
+        sign_in build(:casa_admin, casa_org: casa_org)
 
         group = create(:contact_type_group, casa_org: casa_org, active: true)
 
@@ -126,6 +144,22 @@ RSpec.describe "/contact_type_groups", type: :request do
       end
     end
 
+    context "logged in as admin from a different organization" do
+      it "cannot update another organization's contact type group" do
+        admin_org = create(:casa_org)
+        admin = create(:casa_admin, casa_org: admin_org)
+        other_org = create(:casa_org)
+        other_org_group = create(:contact_type_group, casa_org: other_org)
+
+        sign_in admin
+
+        put contact_type_group_path(other_org_group), params: params
+
+        expect(response).to have_http_status(:not_found)
+        expect(other_org_group.reload.name).not_to eq("New Group Name")
+      end
+    end
+
     context "logged in as a non-admin user" do
       it "cannot update a update a contact type group" do
         sign_in_as_volunteer
@@ -133,7 +167,7 @@ RSpec.describe "/contact_type_groups", type: :request do
         put contact_type_group_path(create(:contact_type_group)), params: params
 
         expect(response).to redirect_to root_path
-        expect(response.request.flash[:notice]).to eq "Sorry, you are not authorized to perform this action."
+        expect(response.request.flash[:alert]).to eq "Sorry, you are not authorized to perform this action."
       end
     end
 

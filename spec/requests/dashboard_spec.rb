@@ -1,42 +1,102 @@
 require "rails_helper"
 
-describe "/dashboard", type: :request do
+RSpec.describe "/dashboard", type: :request do
   let(:organization) { create(:casa_org) }
-  let(:volunteer) { create(:volunteer, casa_org: organization) }
-  let(:admin) { create(:casa_admin, casa_org: organization) }
 
   context "as a volunteer" do
+    let(:volunteer) { create(:volunteer, casa_org: organization) }
+    let!(:case_assignment) { create(:case_assignment, volunteer: volunteer) }
+
     before do
       sign_in volunteer
     end
 
     describe "GET /show" do
-      it "renders a successful response" do
-        get root_url
+      context "with one active case" do
+        it "redirects to the new case contact" do
+          get root_url
 
-        expect(response).to redirect_to(casa_cases_path)
+          expect(response).to redirect_to(new_case_contact_path)
+        end
       end
 
-      it "shows my cases"
-      it "doesn't show other volunteers' cases"
-      it "doesn't show other organizations' cases"
+      context "more than one active case" do
+        let!(:active_case_assignment) { create :case_assignment, volunteer: volunteer }
+
+        it "renders the volunteer dashboard" do
+          get root_url
+
+          expect(response).to have_http_status(:ok)
+        end
+
+        it "shows my cases" do
+          get root_url
+
+          expect(response.body).to include(active_case_assignment.casa_case.case_number)
+          expect(response.body).to include(case_assignment.casa_case.case_number)
+        end
+
+        it "doesn't show other volunteers' cases" do
+          not_logged_in_volunteer = create(:volunteer)
+          create(:case_assignment, volunteer: not_logged_in_volunteer)
+
+          get root_url
+
+          expect(response.body).to include(active_case_assignment.casa_case.case_number)
+          expect(response.body).to include(case_assignment.casa_case.case_number)
+          expect(response.body).not_to include(not_logged_in_volunteer.casa_cases.first.case_number)
+        end
+
+        it "doesn't show other organizations' cases" do
+          different_org = create(:casa_org)
+          not_my_case_assignment = create(:case_assignment, casa_org: different_org)
+
+          get root_url
+
+          expect(response.body).to include(active_case_assignment.casa_case.case_number)
+          expect(response.body).to include(case_assignment.casa_case.case_number)
+          expect(response.body).not_to include(not_my_case_assignment.casa_case.case_number)
+        end
+      end
+    end
+  end
+
+  context "as a supervisor" do
+    let(:supervisor) { create(:supervisor, casa_org: organization) }
+    let(:volunteer) { create(:volunteer, casa_org: organization, display_name: "Wanda Volunteer") }
+    let!(:supervisor_volunteer) { create(:supervisor_volunteer, supervisor: supervisor, volunteer: volunteer) }
+
+    before do
+      sign_in supervisor
+    end
+
+    describe "GET /show" do
+      it "renders the supervisor dashboard with the assigned volunteer" do
+        get root_url
+
+        expect(response).to have_http_status(:ok)
+        expect(response.body).to include("Dashboard")
+        expect(response.body).to include("Wanda Volunteer")
+      end
     end
   end
 
   context "as an admin" do
+    let(:admin) { create(:casa_admin, casa_org: organization) }
+    let!(:unassigned_case) { create(:casa_case, casa_org: organization) }
+
     before do
       sign_in admin
     end
 
     describe "GET /show" do
-      it "renders a successful response" do
+      it "renders the admin dashboard with cases needing attention" do
         get root_url
 
-        expect(response).to redirect_to(supervisors_path)
+        expect(response).to have_http_status(:ok)
+        expect(response.body).to include("Dashboard")
+        expect(response.body).to include(unassigned_case.case_number)
       end
-
-      it "shows all my organization's cases"
-      it "doesn't show other organizations' cases"
     end
   end
 end

@@ -1,42 +1,347 @@
-<div class="row">
-  <div class="col-sm-12 dashboard-table-header">
-    <h1>Supervisors</h1>
+<% content_for :page_title, "Supervisors" %>
+<%# supervisors#index on the casa_app shell. Bespoke Tailwind tables replacing the jQuery
+    DataTable: a supervisor roster (with volunteer-contact stats), a "volunteers without
+    supervisors" list, and a "CASA cases without court dates" list. Server-side status filter
+    (auto-submit). #supervisors lives on the wrapper <div> (not the <table>) so dashboard.js's
+    $('table#supervisors').DataTable(...) no longer matches and no serverSide table inits over
+    the migrated markup. Hearing type / Judge columns are dropped: that data moved onto court
+    dates in 2023, so it is always blank for court-date-less cases (see design.md). Spec hooks:
+    #supervisors, .supervisor-filters, [data-stat]. %>
+<% th = "px-4 py-3 text-left text-xs font-semibold text-slate-600 whitespace-nowrap align-top" %>
+<% td = "px-4 py-3 text-sm text-slate-700 align-top" %>
+<%# Numeric columns are right-aligned with tabular figures so digits line up and a column can be
+    scanned and compared -- the convention for quantitative table data (GOV.UK, Material). ONE style
+    for every figure, zeros included: same colour as the rest of the table body, same weight, no
+    per-cell emphasis and no links on the numerals. Varying them (blue where a drill-through happened
+    to exist, semibold on the "interesting" one, muted for zero) made three unrelated signals fight
+    across four adjacent cells and destroyed the comparability the columns exist for. %>
+<% th_num = "px-4 py-3 text-right text-xs font-semibold text-slate-600 whitespace-nowrap align-top" %>
+<% td_num = "px-4 py-3 text-right text-sm tabular-nums text-slate-700 whitespace-nowrap align-top" %>
+<% pill = "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium" %>
+<% ts_select_class = "block w-full" %>
+<% chevron = "bi bi-chevron-down pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500" %>
+
+<div class="px-4 py-6 sm:px-6 lg:px-8">
+  <div class="mb-6 flex flex-wrap items-end justify-between gap-3">
+    <h1 class="text-2xl font-bold tracking-tight text-slate-900">Supervisors</h1>
     <% if policy(Supervisor).create? %>
-      <%= link_to "New Supervisor", new_supervisor_path, class: "btn btn-primary" %>
+      <%= link_to new_supervisor_path, class: button_classes(:primary) do %><i class="bi bi-plus-lg" aria-hidden="true"></i> New supervisor<% end %>
     <% end %>
   </div>
-</div>
 
-<div class="card card-container">
-  <div class="card-body">
-    <table class="table table-striped table-bordered" id="supervisors">
-      <thead>
-      <tr>
-        <th>Supervisor Name</th>
-        <th>Volunteer Assignments</th>
-        <th>Serving Transition Aged Youth</th>
-        <th>No Contact (14 days)</th>
-        <th>Actions</th>
-      </tr>
-      </thead>
+  <%# Status filter (server-side, submits on change). %>
+  <%= form_with url: supervisors_path, method: :get, data: {controller: "auto-submit", action: "change->auto-submit#submit"}, class: "supervisor-filters mb-4" do %>
+    <div class="w-full max-w-[10rem]">
+      <%= label_tag :status, "Status", class: "mb-1 block text-xs font-medium text-slate-500" %>
+      <div class="relative">
+        <%= select_tag :status, options_for_select([["Active", "active"], ["Inactive", "inactive"], ["All", "all"]], @status), class: "block w-full appearance-none rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 focus:outline-none" %>
+        <i class="<%= chevron %>" aria-hidden="true"></i>
+      </div>
+    </div>
+    <noscript><%= submit_tag "Filter", class: "#{button_classes(:primary)} mt-2" %></noscript>
+  <% end %>
 
-      <tbody>
-      <% @supervisors.each do |supervisor| %>
-        <tr>
-          <td id="name-<%= supervisor.id %>">
-            <%= link_to(supervisor.display_name, edit_supervisor_path(supervisor)) %>
-          </td>
-          <td id="volunteer-assignments-<%= supervisor.id %>"> <%= supervisor.volunteers.size %></td>
-          <td id="serving-transition-aged-youth-<%= supervisor.id %>">
-            <%= supervisor.volunteers_serving_transistion_aged_youth %>
-          </td>
-          <td id="no-contact-<%= supervisor.id %>">
-            <%= supervisor.no_contact_for_two_weeks %>
-          </td>
-          <td><%= link_to 'Edit', edit_supervisor_path(supervisor) %></td>
-        </tr>
-      <% end %>
-      </tbody>
-    </table>
+  <%# Volunteer counts, computed once: no_attempt_for_two_weeks walks every volunteer's contacts,
+      and the desktop table and the mobile card list below both need them. active_volunteers counts
+      only active volunteers while no_attempt_for_two_weeks counts all of them, so the difference can
+      go negative -- clamp it, as the pill version did. %>
+  <% supervisor_stats = @supervisors.map do |supervisor|
+       not_attempting = supervisor.no_attempt_for_two_weeks
+       total = supervisor.active_volunteers
+       [supervisor, {total: total, attempting: [total - not_attempting, 0].max,
+                     not_attempting: not_attempting,
+                     transition: supervisor.volunteers_serving_transition_aged_youth}]
+     end %>
+
+  <%# Supervisor roster. #supervisors is the spec hook (on the wrapper, not the <table>), and the
+      ids and [data-stat] hooks live on this table only -- the mobile list must not duplicate them. %>
+  <div id="supervisors" class="hidden overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 shadow-sm md:block">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <caption class="sr-only">Supervisors and their volunteer counts. Attempting and not attempting count each supervisor's volunteers by whether they logged a case contact in the last two weeks.</caption>
+        <thead>
+          <tr class="border-b border-slate-100">
+            <th scope="col" class="<%= th %>">Supervisor</th>
+            <th scope="col" class="<%= th_num %>">Volunteers</th>
+            <th scope="col" class="<%= th_num %>">Attempting</th>
+            <th scope="col" class="<%= th_num %>">Not attempting</th>
+            <th scope="col" class="<%= th_num %>">Transition-aged</th>
+            <th scope="col" class="<%= th %>"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-50">
+          <% if @supervisors.any? %>
+            <% supervisor_stats.each do |supervisor, stats| %>
+              <% total, attempting, not_attempting, transition = stats.values_at(:total, :attempting, :not_attempting, :transition) %>
+              <tr id="supervisor-<%= supervisor.id %>-information" class="hover:bg-slate-50/70">
+                <td class="<%= td %>">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <%= link_to formatted_name(supervisor.display_name).presence || supervisor.email, edit_supervisor_path(supervisor), class: "font-medium #{name_link_class}" %>
+                    <% unless supervisor.active? %>
+                      <span class="<%= pill %> bg-slate-100 text-slate-600"><i class="bi bi-dash-circle" aria-hidden="true"></i> Inactive</span>
+                    <% end %>
+                  </div>
+                </td>
+                <%# One count per column, always rendered (0 included) so every row lines up and the
+                    column can be read top to bottom. These were three pills in a single cell, two of
+                    them omitted at zero, which put the same metric at a different x-offset on every
+                    row. Badges are for categorical status, not quantities. %>
+                <td class="<%= td_num %>" data-stat="<%= total.zero? ? "no-volunteers" : "volunteers" %>"><%= total %></td>
+                <td class="<%= td_num %>" data-stat="attempting"><%= attempting %></td>
+                <td class="<%= td_num %>" data-stat="not-attempting"><%= not_attempting %></td>
+                <td class="<%= td_num %>" data-stat="transition"><%= transition %></td>
+                <%# The drill-through is ONE row-level action, not a link on some of the figures. Only
+                    two of the four counts had anywhere to point (volunteers#index can filter by
+                    supervisor and by transition age, but not by contact activity), so linking the
+                    numerals advertised that asymmetry in the worst possible place. Same two-ghost-action
+                    shape as the cases table below. %>
+                <td class="px-4 py-3 text-right whitespace-nowrap align-top">
+                  <div class="flex items-center justify-end gap-1">
+                    <%= link_to volunteers_path(supervisor: supervisor.id, from: "supervisors"), class: ghost_class, "aria-label": "View #{formatted_name(supervisor.display_name)}'s volunteers" do %><i class="bi bi-people" aria-hidden="true"></i> Volunteers<% end %>
+                    <%= link_to edit_supervisor_path(supervisor), "aria-label": "Edit #{formatted_name(supervisor.display_name)}", class: ghost_class do %><i class="bi bi-pencil" aria-hidden="true"></i> Edit<% end %>
+                  </div>
+                </td>
+              </tr>
+            <% end %>
+          <% else %>
+            <tr>
+              <td colspan="6" class="px-4 py-14 text-center">
+                <div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-400"><i class="bi bi-diagram-3 text-xl" aria-hidden="true"></i></div>
+                <p class="mt-3 text-sm font-semibold text-slate-900">No supervisors found</p>
+                <p class="mt-1 text-sm text-slate-500"><%= (@status == "active") ? "There are no active supervisors to show." : "Try a different status filter." %></p>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
   </div>
+
+  <%# Mobile: stacked cards (below md). Six numeric columns cannot fit a 390px viewport without
+      two-dimensional scrolling, and the counts are the point of this table, so below md each
+      supervisor becomes a card with the same figures in a labelled grid. Same trade the
+      "CASA cases without court dates" section below makes. No ids or [data-stat] hooks here --
+      they stay unique to the table above. %>
+  <div class="space-y-3 md:hidden">
+    <% if supervisor_stats.any? %>
+      <% supervisor_stats.each do |supervisor, stats| %>
+        <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <%= link_to formatted_name(supervisor.display_name).presence || supervisor.email, edit_supervisor_path(supervisor), class: "font-medium #{name_link_class}" %>
+              <% unless supervisor.active? %>
+                <span class="<%= pill %> bg-slate-100 text-slate-600"><i class="bi bi-dash-circle" aria-hidden="true"></i> Inactive</span>
+              <% end %>
+            </div>
+            <%= link_to edit_supervisor_path(supervisor), "aria-label": "Edit #{formatted_name(supervisor.display_name)}", class: "-mr-1 -mt-1 flex-none #{ghost_class}" do %><i class="bi bi-pencil" aria-hidden="true"></i> Edit<% end %>
+          </div>
+          <%# Same single numeral style as the table: one colour, one weight, zeros included. %>
+          <% dd_num = "mt-0.5 text-sm tabular-nums text-slate-700" %>
+          <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+            <div>
+              <dt class="text-xs text-slate-500">Volunteers</dt>
+              <dd class="<%= dd_num %>"><%= stats[:total] %></dd>
+            </div>
+            <div>
+              <dt class="text-xs text-slate-500">Transition-aged</dt>
+              <dd class="<%= dd_num %>"><%= stats[:transition] %></dd>
+            </div>
+            <div>
+              <dt class="text-xs text-slate-500">Attempting</dt>
+              <dd class="<%= dd_num %>"><%= stats[:attempting] %></dd>
+            </div>
+            <div>
+              <dt class="text-xs text-slate-500">Not attempting</dt>
+              <dd class="<%= dd_num %>"><%= stats[:not_attempting] %></dd>
+            </div>
+          </dl>
+          <%# The one drill-through, matching the table's row-level action. %>
+          <div class="mt-3">
+            <%= link_to volunteers_path(supervisor: supervisor.id, from: "supervisors"), class: ghost_class do %><i class="bi bi-people" aria-hidden="true"></i> Volunteers<% end %>
+          </div>
+        </div>
+      <% end %>
+    <% else %>
+      <div class="rounded-2xl border border-slate-200 bg-white p-6 text-center">
+        <p class="text-sm font-semibold text-slate-900">No supervisors found</p>
+        <p class="mt-1 text-sm text-slate-500"><%= (@status == "active") ? "There are no active supervisors to show." : "Try a different status filter." %></p>
+      </div>
+    <% end %>
+  </div>
+
+  <%# Volunteers without supervisors. %>
+  <section class="mt-8">
+    <h2 class="mb-3 text-lg font-semibold text-slate-900">Volunteers without supervisors</h2>
+    <% if @available_volunteers.any? %>
+      <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 shadow-sm">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-slate-100">
+                <th class="<%= th %>">Volunteer</th>
+                <th class="<%= th %>">Cases</th>
+                <th class="<%= th %>">Volunteer since</th>
+                <th class="px-4 py-3 text-right text-xs font-semibold text-slate-600 whitespace-nowrap align-top">Assign supervisor</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-50">
+              <% @available_volunteers.each do |volunteer| %>
+                <tr class="hover:bg-slate-50/70">
+                  <td class="<%= td %>"><%= link_to formatted_name(volunteer.display_name).presence || volunteer.email, edit_volunteer_path(volunteer), class: "font-medium #{name_link_class}" %></td>
+                  <td class="<%= td %>"><% case_count = volunteer.casa_cases.size %><%= case_count.positive? ? pluralize(case_count, "case") : tag.span("\u2014", class: "text-slate-500") %></td>
+                  <td class="<%= td %>"><%= I18n.l(volunteer.created_at, format: :full) %></td>
+                  <td class="<%= td %> text-right">
+                    <% if @active_supervisors.any? %>
+                      <%= form_with model: SupervisorVolunteer.new, url: supervisor_volunteers_path(volunteer_id: volunteer.id), class: "flex flex-col items-end gap-1" do |form| %>
+                        <div class="flex items-center justify-end gap-2">
+                          <div class="w-48 text-left">
+                            <select name="supervisor_volunteer[supervisor_id]" aria-label="Supervisor for <%= formatted_name(volunteer.display_name) %>" data-controller="searchable-select" data-searchable-select-dropdown-parent-value="body" data-searchable-select-placeholder-value="Search supervisors" data-searchable-select-toggle-submit-value="true" class="<%= ts_select_class %>">
+                              <option value=""></option>
+                              <% @active_supervisors.each do |s| %><option value="<%= s.id %>"><%= formatted_name(s.display_name) %></option><% end %>
+                            </select>
+                          </div>
+                          <%= form.hidden_field :volunteer_id, value: volunteer.id %>
+                          <%= button_tag type: "submit", class: ghost_class do %><i class="bi bi-person-plus" aria-hidden="true"></i> Assign<% end %>
+                        </div>
+                        <p data-searchable-select-error role="alert" class="mt-1.5 hidden text-sm text-slate-500"><i class="bi bi-exclamation-circle text-rose-600" aria-hidden="true"></i> Choose a supervisor.</p>
+                      <% end %>
+                    <% else %>
+                      <span class="text-slate-500">No supervisors to assign</span>
+                    <% end %>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    <% else %>
+      <div class="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+        There are no active volunteers without supervisors to display here
+      </div>
+    <% end %>
+  </section>
+
+  <%# CASA cases without court dates. %>
+  <section class="mt-8">
+    <h2 class="mb-3 text-lg font-semibold text-slate-900">CASA cases without court dates</h2>
+
+    <%# Desktop table (md+). %>
+    <div data-test="cases-without-court-dates" class="hidden overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 shadow-sm md:block">
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-slate-100">
+              <th class="<%= th %>">Case number</th>
+              <th class="<%= th %>">Status</th>
+              <th class="<%= th %>">Transition-aged youth</th>
+              <th class="<%= th %>">Assigned to</th>
+              <th class="<%= th %>"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-50">
+            <% if @casa_cases.any? %>
+              <% @casa_cases.each do |casa_case| %>
+                <tr class="hover:bg-slate-50/70">
+                  <td class="<%= td %>"><%= link_to casa_case.case_number, casa_case, class: "font-medium #{record_link_class}" %></td>
+                  <td class="<%= td %>">
+                    <% if casa_case.active? %>
+                      <span class="<%= pill %> bg-emerald-50 text-emerald-700"><i class="bi bi-check-circle" aria-hidden="true"></i> Active</span>
+                    <% else %>
+                      <span class="<%= pill %> bg-slate-100 text-slate-600"><i class="bi bi-dash-circle" aria-hidden="true"></i> Inactive</span>
+                    <% end %>
+                  </td>
+                  <td class="<%= td %>">
+                    <% if casa_case.in_transition_age? %>
+                      <span class="<%= pill %> bg-violet-50 text-violet-700">Yes</span>
+                    <% else %>
+                      <span class="text-slate-500">No</span>
+                    <% end %>
+                  </td>
+                  <td class="<%= td %>">
+                    <% if casa_case.active? %>
+                      <% if current_user.volunteer? %>
+                        <%= safe_join(casa_case.assigned_volunteers.map { |vol| tag.span(formatted_name(vol.display_name), class: "font-medium text-slate-800") }, ", ").presence || tag.span("\u2014", class: "text-slate-500") %>
+                      <% else %>
+                        <%= safe_join(casa_case.assigned_volunteers.map { |vol| link_to(formatted_name(vol.display_name), edit_volunteer_path(vol), class: "font-medium #{name_link_class}") }, ", ").presence || tag.span("\u2014", class: "text-slate-500") %>
+                      <% end %>
+                    <% else %>
+                      <span class="text-slate-500">Case was deactivated on: <%= I18n.l(casa_case.updated_at, format: :standard, default: nil) %></span>
+                    <% end %>
+                  </td>
+                  <td class="px-4 py-3 text-right whitespace-nowrap align-top">
+                    <div class="flex items-center justify-end gap-1">
+                      <%= link_to casa_case_path(casa_case), class: ghost_class do %><i class="bi bi-eye" aria-hidden="true"></i> Detail view<% end %>
+                      <%= link_to edit_casa_case_path(casa_case), "aria-label": "Edit #{casa_case.case_number}", class: ghost_class do %><i class="bi bi-pencil" aria-hidden="true"></i> Edit<% end %>
+                    </div>
+                  </td>
+                </tr>
+              <% end %>
+            <% else %>
+              <tr>
+                <td colspan="5" class="px-4 py-10 text-center text-sm text-slate-500">All cases have court dates scheduled.</td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <%# Mobile: stacked cards (below md). %>
+    <div class="md:hidden">
+      <% if @casa_cases.any? %>
+        <ul class="space-y-3">
+          <% @casa_cases.each do |casa_case| %>
+            <li class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div class="flex items-start justify-between gap-3">
+                <%= link_to casa_case.case_number, casa_case, class: "text-base font-semibold #{record_link_class}" %>
+                <%= link_to edit_casa_case_path(casa_case), "aria-label": "Edit #{casa_case.case_number}", class: "-mr-1 -mt-1 flex-none #{ghost_class}" do %><i class="bi bi-pencil" aria-hidden="true"></i>Edit<% end %>
+              </div>
+              <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+                <div>
+                  <dt class="text-xs text-slate-500">Status</dt>
+                  <dd class="mt-0.5">
+                    <% if casa_case.active? %>
+                      <span class="<%= pill %> bg-emerald-50 text-emerald-700"><i class="bi bi-check-circle" aria-hidden="true"></i> Active</span>
+                    <% else %>
+                      <span class="<%= pill %> bg-slate-100 text-slate-600"><i class="bi bi-dash-circle" aria-hidden="true"></i> Inactive</span>
+                    <% end %>
+                  </dd>
+                </div>
+                <div>
+                  <dt class="text-xs text-slate-500">Transition-aged youth</dt>
+                  <dd class="mt-0.5">
+                    <% if casa_case.in_transition_age? %>
+                      <span class="<%= pill %> bg-violet-50 text-violet-700">Yes</span>
+                    <% else %>
+                      <span class="text-sm text-slate-500">No</span>
+                    <% end %>
+                  </dd>
+                </div>
+                <div class="col-span-2">
+                  <dt class="text-xs text-slate-500">Assigned to</dt>
+                  <dd class="mt-0.5 text-sm text-slate-700">
+                    <% if casa_case.active? %>
+                      <% if current_user.volunteer? %>
+                        <%= safe_join(casa_case.assigned_volunteers.map { |vol| tag.span(formatted_name(vol.display_name), class: "font-medium text-slate-800") }, ", ").presence || tag.span("\u2014", class: "text-slate-500") %>
+                      <% else %>
+                        <%= safe_join(casa_case.assigned_volunteers.map { |vol| link_to(formatted_name(vol.display_name), edit_volunteer_path(vol), class: "font-medium #{name_link_class}") }, ", ").presence || tag.span("\u2014", class: "text-slate-500") %>
+                      <% end %>
+                    <% else %>
+                      <span class="text-slate-500">Case was deactivated on: <%= I18n.l(casa_case.updated_at, format: :standard, default: nil) %></span>
+                    <% end %>
+                  </dd>
+                </div>
+              </dl>
+              <div class="mt-3">
+                <%= link_to casa_case_path(casa_case), class: ghost_class do %><i class="bi bi-eye" aria-hidden="true"></i> Detail view<% end %>
+              </div>
+            </li>
+          <% end %>
+        </ul>
+      <% else %>
+        <div class="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">All cases have court dates scheduled.</div>
+      <% end %>
+    </div>
+  </section>
 </div>

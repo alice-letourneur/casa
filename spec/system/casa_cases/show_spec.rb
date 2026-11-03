@@ -1,0 +1,329 @@
+require "rails_helper"
+
+RSpec.describe "casa_cases/show", type: :system do
+  include ActionView::Helpers::DateHelper
+
+  let(:organization) { create(:casa_org) }
+  let(:admin) { create(:casa_admin, casa_org: organization) }
+  let(:volunteer) { build(:volunteer, display_name: "Bob Loblaw", casa_org: organization) }
+  let(:casa_case) {
+    create(:casa_case, :with_one_court_order, casa_org: organization,
+      case_number: "CINA-1", date_in_care: date_in_care)
+  }
+  let!(:court_date) { create(:court_date, court_report_due_date: 1.month.from_now) }
+  let(:date_in_care) { 6.years.ago }
+  let!(:case_assignment) { create(:case_assignment, volunteer: volunteer, casa_case: casa_case) }
+  let!(:case_contact) { create(:case_contact, creator: volunteer, casa_case: casa_case) }
+  let!(:emancipation_categories) { create_list(:emancipation_category, 3) }
+  let!(:future_court_date) { create(:court_date, date: 21.days.from_now, casa_case: casa_case) }
+
+  before do
+    sign_in user
+    visit casa_case_path(casa_case.id)
+  end
+
+  shared_examples "shows emancipation checklist link" do
+    context "when youth is in transition age" do
+      it "sees link to emancipation", :js do
+        find("summary", text: "More").click
+        expect(page).to have_link("Emancipation 0 / #{emancipation_categories.size}")
+      end
+    end
+
+    context "when youth is not in transition age" do
+      before do
+        casa_case.update!(birth_month_year_youth: DateTime.current)
+        visit casa_case_path(casa_case)
+      end
+
+      it "does not see a link to emancipation checklist" do
+        expect(page).not_to have_link("Emancipation 0 / #{emancipation_categories.size}")
+      end
+    end
+  end
+
+  describe "Report Generation", :js do
+    let(:user) { volunteer }
+
+    before do
+      travel_to Date.new(2021, 1, 1)
+      sign_in user
+      visit casa_case_path(casa_case.id)
+    end
+
+    it "keeps the generate button inside the closed modal" do
+      expect(page).to have_button("Generate report", visible: false)
+    end
+
+    it "generates a court report for the case's date range" do
+      find("summary", text: "More").click
+      click_button "Generate court report"
+
+      within("#generate-court-report") do
+        expect(page).to have_content(casa_case.case_number)
+        expect(page).to have_unchecked_field("Include sections with no entries")
+        # No past hearing, so the window starts the day the case was opened in CASA -- not "today",
+        # which would be an empty window. (The case is created before this example freezes the clock.)
+        expect(page.find("#start_date").value).to eq(casa_case.created_at.to_date.to_s)
+        # Filled by JS with today in the browser's zone, which travel_to cannot freeze.
+        expect(page.find("#end_date").value).to eq(browser_today)
+
+        click_button "Generate report"
+      end
+
+      wait_for_download
+      expect(download_file_name).to match(/#{casa_case.case_number}.docx/)
+    end
+  end
+
+  context "admin user" do
+    let(:user) { admin }
+
+    it_behaves_like "shows court dates links"
+    it_behaves_like "shows emancipation checklist link"
+
+    it "can see case creator in table" do
+      expect(page).to have_text("Bob Loblaw")
+    end
+
+    it "can navigate to edit volunteer page" do
+      expect(page).to have_link("Bob Loblaw", href: %r{/volunteers/#{volunteer.id}/edit})
+    end
+
+    it "sees link to profile page" do
+      # the profile link lives in the account menu dropdown (closed by default)
+      expect(page).to have_link(href: "/users/edit", visible: false)
+    end
+
+    it "can see court orders" do
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content(ApplicationController.helpers.court_order_status_label(casa_case.case_court_orders[0]))
+    end
+
+    it "can see next court date", :js do
+      expect(page).to have_content("Next court date:")
+      expect(page).to have_content(I18n.l(future_court_date.date, format: :day_and_date))
+    end
+
+    it "can see the youth's Date In Care", :js do
+      expect(page).to have_content("Youth's date in care:")
+      expect(page).to have_content(I18n.l(date_in_care, format: :youth_date_of_birth))
+    end
+
+    it "can see the time since the youth's Date In Care", :js do
+      expect(page).to have_content("In care for #{time_ago_in_words(date_in_care)}")
+    end
+
+    it "can see Add to Calendar buttons", :js do
+      expect(page).to have_content("Add to calendar")
+    end
+
+    context "court report download link visibility" do
+      it "does not show download link to admin when report status is not submitted" do
+        fixture = Rails.root.join("spec/fixtures/files/sample_report.docx")
+        casa_case.court_reports.attach(
+          io: File.open(fixture),
+          filename: "sample_report.docx",
+          content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        casa_case.update!(court_report_status: :in_review)
+
+        visit casa_case_path(casa_case.id)
+        expect(page).not_to have_link("Click to download")
+      end
+
+      it "shows download link to admin when report status is submitted" do
+        fixture = Rails.root.join("spec/fixtures/files/sample_report.docx")
+        casa_case.court_reports.attach(
+          io: File.open(fixture),
+          filename: "sample_report.docx",
+          content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        casa_case.update!(court_report_status: :submitted)
+
+        visit casa_case_path(casa_case.id)
+        expect(page).to have_link("Click to download")
+      end
+    end
+
+    context "when there is no future court date or court report due date" do
+      before do
+        casa_case = create(:casa_case, casa_org: organization)
+        visit casa_case_path(casa_case.id)
+      end
+
+      it "can not see Add to Calendar buttons", :js do
+        expect(page).not_to have_content("Add to calendar")
+      end
+    end
+
+    context "when old case contacts are hidden" do
+      it "displays all case contacts to admin", :js do
+        casa_case = create(:casa_case, casa_org: organization)
+        volunteer_1 = create(:volunteer, display_name: "Volunteer 1", casa_org: casa_case.casa_org)
+        volunteer_2 = create(:volunteer, display_name: "Volunteer 2", casa_org: casa_case.casa_org)
+        create(:case_assignment, casa_case: casa_case, volunteer: volunteer_1)
+        create(:case_assignment, casa_case: casa_case, volunteer: volunteer_2, active: false, hide_old_contacts: true)
+        create(:case_contact, contact_made: true, casa_case: casa_case, creator: volunteer_1, occurred_at: DateTime.now - 1)
+        create(:case_contact, contact_made: true, casa_case: casa_case, creator: volunteer_2, occurred_at: DateTime.now - 1)
+
+        visit casa_case_path(casa_case.id)
+
+        expect(page).to have_css("#case_contacts_list [data-case-contact]", count: 2)
+      end
+    end
+  end
+
+  context "supervisor user" do
+    let(:user) { create(:supervisor, casa_org: organization) }
+    let!(:case_contact) { create(:case_contact, creator: user, casa_case: casa_case) }
+
+    it_behaves_like "shows emancipation checklist link"
+
+    it "sees link to own edit page" do
+      expect(page).to have_link(href: "/supervisors/#{user.id}/edit")
+    end
+
+    context "case contact by another supervisor" do
+      let(:other_supervisor) { create(:supervisor, casa_org: organization) }
+      let!(:case_contact) { create(:case_contact, creator: other_supervisor, casa_case: casa_case) }
+
+      it "sees link to other supervisor" do
+        expect(page).to have_link(href: "/supervisors/#{other_supervisor.id}/edit")
+      end
+    end
+
+    it "can see court orders" do
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content(ApplicationController.helpers.court_order_status_label(casa_case.case_court_orders[0]))
+    end
+
+    context "court report download link visibility" do
+      it "does not show download link to supervisor when report status is not submitted" do
+        fixture = Rails.root.join("spec/fixtures/files/sample_report.docx")
+        casa_case.court_reports.attach(
+          io: File.open(fixture),
+          filename: "sample_report.docx",
+          content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        casa_case.update!(court_report_status: :in_review)
+
+        visit casa_case_path(casa_case.id)
+        expect(page).not_to have_link("Click to download")
+      end
+
+      it "shows download link to supervisor when report status is submitted" do
+        fixture = Rails.root.join("spec/fixtures/files/sample_report.docx")
+        casa_case.court_reports.attach(
+          io: File.open(fixture),
+          filename: "sample_report.docx",
+          content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        casa_case.update!(court_report_status: :submitted)
+
+        visit casa_case_path(casa_case.id)
+        expect(page).to have_link("Click to download")
+      end
+    end
+
+    context "when old case contacts are hidden" do
+      it "displays all case contacts to supervisor", :js do
+        casa_case = create(:casa_case, casa_org: organization)
+        volunteer_1 = create(:volunteer, display_name: "Volunteer 1", casa_org: casa_case.casa_org)
+        volunteer_2 = create(:volunteer, display_name: "Volunteer 2", casa_org: casa_case.casa_org)
+        create(:case_assignment, casa_case: casa_case, volunteer: volunteer_1)
+        create(:case_assignment, casa_case: casa_case, volunteer: volunteer_2, active: false, hide_old_contacts: true)
+        create(:case_contact, contact_made: true, casa_case: casa_case, creator: volunteer_1, occurred_at: DateTime.now - 1)
+        create(:case_contact, contact_made: true, casa_case: casa_case, creator: volunteer_2, occurred_at: DateTime.now - 1)
+
+        visit casa_case_path(casa_case.id)
+
+        expect(page).to have_css("#case_contacts_list [data-case-contact]", count: 2)
+      end
+    end
+  end
+
+  context "volunteer user" do
+    let(:user) { volunteer }
+
+    it_behaves_like "shows emancipation checklist link"
+
+    it "can see court orders" do
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content(ApplicationController.helpers.court_order_status_label(casa_case.case_court_orders[0]))
+    end
+
+    context "when old case contacts are hidden" do
+      before do
+        volunteer_2 = create(:volunteer, display_name: "Volunteer 2", casa_org: casa_case.casa_org)
+        create(:case_assignment, casa_case: casa_case, volunteer: volunteer_2, active: false, hide_old_contacts: true)
+        create(:case_contact, contact_made: true, casa_case: casa_case, creator: volunteer_2, occurred_at: DateTime.now - 1)
+      end
+
+      it "displays only visible cases to volunteer", :js do
+        visit casa_case_path(casa_case.id)
+        expect(page).to have_css("#case_contacts_list [data-case-contact]", count: 1)
+      end
+    end
+
+    context "when old case contacts are displayed" do
+      before do
+        volunteer_2 = create(:volunteer, display_name: "Volunteer 2", casa_org: casa_case.casa_org)
+        create(:case_assignment, casa_case: casa_case, volunteer: volunteer_2, active: false, hide_old_contacts: false)
+        create(:case_contact, contact_made: true, casa_case: casa_case, creator: volunteer_2, occurred_at: DateTime.now - 1)
+      end
+
+      it "displays all cases to the volunteer" do
+        visit casa_case_path(casa_case.id)
+        expect(page).to have_css("#case_contacts_list [data-case-contact]", count: 2)
+      end
+    end
+  end
+
+  context "court order - implementation status pill" do
+    let(:user) { admin }
+
+    it "when implemented" do
+      casa_case.case_court_orders[0].update(implementation_status: :implemented)
+
+      visit casa_case_path(casa_case)
+
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content("Implemented")
+    end
+
+    it "when not implemented" do
+      casa_case.case_court_orders[0].update(implementation_status: :unimplemented)
+
+      visit casa_case_path(casa_case)
+
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content("Not implemented")
+    end
+
+    it "when partial implemented" do
+      casa_case.case_court_orders[0].update(implementation_status: :partially_implemented)
+
+      visit casa_case_path(casa_case)
+
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content("Partially implemented")
+    end
+
+    it "when not specified" do
+      casa_case.case_court_orders[0].update(implementation_status: nil)
+
+      visit casa_case_path(casa_case)
+
+      expect(page).to have_content("Court orders")
+      expect(page).to have_content(casa_case.case_court_orders[0].text)
+      expect(page).to have_content("Not specified")
+    end
+  end
+end

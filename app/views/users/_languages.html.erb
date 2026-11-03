@@ -1,0 +1,40 @@
+<section class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+  <h2 class="text-base font-semibold text-slate-900">My languages</h2>
+  <div class="mt-4 overflow-hidden rounded-xl border border-slate-200">
+    <table class="w-full text-sm">
+      <thead class="text-left text-xs font-semibold text-slate-600">
+        <tr class="border-b border-slate-100">
+          <th scope="col" class="px-4 py-2.5 font-semibold">Languages</th>
+          <th scope="col" class="px-4 py-2.5 font-semibold">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-50">
+        <tr>
+          <td class="px-4 py-2.5 text-slate-700">English (default language)</td>
+          <td class="px-4 py-2.5"></td>
+        </tr>
+        <% volunteer.languages.each do |lang| %>
+          <tr>
+            <td class="px-4 py-2.5 text-slate-700"><%= lang.name %></td>
+            <td class="px-4 py-2.5">
+              <%= link_to remove_language_users_path(language_id: lang.id), method: :delete, class: ghost_class(:danger) do %><i class="bi bi-trash" aria-hidden="true"></i> Delete<% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+
+  <%= form_with(model: volunteer, url: add_language_users_path) do |form| %>
+    <div class="mt-4 flex flex-wrap items-end gap-3">
+      <div>
+        <%= form.label :languages, "Add language", class: "mb-1.5 block text-sm font-medium text-slate-700" %>
+        <%= form.select :languages,
+              current_organization.languages.map { |lang| [lang.name, lang.id] },
+              {include_blank: true},
+              {name: :language_id, class: "block w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 focus:outline-none sm:w-64"} %>
+      </div>
+      <%= button_tag "Add", type: :submit, id: "add-language-button", class: button_classes(:primary) %>
+    </div>
+  <% end %>
+</section>

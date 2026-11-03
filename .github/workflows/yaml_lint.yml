@@ -1,0 +1,25 @@
+name: Yaml Lint
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'doc/**'
+      - '**/*.md'
+  pull_request:
+    # The branches below must be a subset of the branches above
+    branches:
+      - main
+    paths-ignore:
+      - 'doc/**'
+      - '**/*.md'
+jobs:
+  lintAllTheThings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: yaml-lint
+        uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c # v3

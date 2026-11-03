@@ -1,0 +1,74 @@
+<% content_for :page_title, "Court date" %>
+<%# court_dates#show on casa_app. Fact labels are bare <dt>s -- they used to wrap an <h6>,
+    which skipped h2-h5 after the page <h1> (axe heading-order) and added a heading level a
+    <dt> already conveys. "Court orders:" is a real section heading, so it is an <h2>. View +
+    system specs assert these by xpath, so keep the dt/dd adjacency. The
+    Title-Case-with-colon fact labels ride the deferred sentence-case sweep. %>
+<% card = "rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6" %>
+<% label = "text-sm font-medium text-slate-500" %>
+<% th = "px-4 py-3 text-left text-xs font-semibold text-slate-600 align-top" %>
+<% td = "px-4 py-3 text-sm text-slate-700 align-top" %>
+
+<div class="px-4 py-6 sm:px-6 lg:px-8">
+  <div class="mx-auto max-w-3xl space-y-6">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-slate-900">Court date</h1>
+        <time datetime="<%= @court_date.date %>" class="mt-1 block text-sm text-slate-500"><%= @court_date.decorate.formatted_date %></time>
+      </div>
+      <%= link_to edit_casa_case_court_date_path(@casa_case, @court_date), class: button_classes(:primary) do %>
+        <i class="bi bi-pencil" aria-hidden="true"></i> Edit
+      <% end %>
+    </div>
+
+    <div class="<%= card %>">
+      <dl>
+        <dt class="<%= label %>">Case number:</dt>
+        <dd class="mb-4 mt-1 text-sm"><%= link_to @casa_case.case_number, casa_case_path(@casa_case), class: "font-medium text-brand-600 hover:text-brand-700" %></dd>
+        <dt class="<%= label %>">Court report due date:</dt>
+        <dd class="mb-4 mt-1 text-sm text-slate-800"><%= I18n.l(@court_date.court_report_due_date, format: :full, default: "None") %></dd>
+        <dt class="<%= label %>">Judge:</dt>
+        <dd class="mb-4 mt-1 text-sm text-slate-800"><%= @court_date.judge&.name || "None" %></dd>
+        <dt class="<%= label %>">Hearing type:</dt>
+        <dd class="mb-4 mt-1 text-sm text-slate-800"><%= @court_date.hearing_type&.name || "None" %></dd>
+      </dl>
+
+      <h2 class="<%= label %> mb-2">Court orders:</h2>
+      <% if @court_date.case_court_orders.any? %>
+        <div class="overflow-hidden rounded-xl border border-slate-200">
+          <div class="overflow-x-auto">
+            <table class="min-w-full text-sm">
+              <thead>
+                <tr class="border-b border-slate-100">
+                  <th scope="col" class="<%= th %>">Case order text</th>
+                  <th scope="col" class="<%= th %> text-center">Implementation status</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-50">
+                <% @court_date.case_court_orders.each do |court_order| %>
+                  <tr>
+                    <td class="<%= td %>"><%= court_order.text %></td>
+                    <td class="<%= td %> text-center"><%= court_order.implementation_status&.humanize %></td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      <% else %>
+        <p class="text-sm text-slate-500">There are no court orders associated with this court date.</p>
+      <% end %>
+
+      <div class="mt-6 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-5">
+        <%= link_to casa_case_court_date_path(@casa_case, @court_date, format: :docx), class: button_classes(:secondary) do %>
+          <i class="bi bi-download" aria-hidden="true"></i> Download report (.docx)
+        <% end %>
+        <% if policy(:court_date).destroy? && @court_date.date > Time.now %>
+          <%= link_to casa_case_court_date_path(@casa_case, @court_date), method: :delete, data: {confirm: "Are you sure?"}, class: "#{button_classes(:danger_outline)} sm:ms-auto" do %>
+            <i class="bi bi-trash" aria-hidden="true"></i> Delete future court date
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+  </div>
+</div>

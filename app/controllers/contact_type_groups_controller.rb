@@ -1,29 +1,35 @@
 class ContactTypeGroupsController < ApplicationController
-  before_action :authenticate_user!, :must_be_admin
+  layout "casa_app"
+  before_action -> { @active_nav = "settings" }
   before_action :set_contact_type_group, except: [:new, :create]
+  after_action :verify_authorized
 
   def new
+    authorize ContactTypeGroup
     @contact_type_group = ContactTypeGroup.new
   end
 
   def create
+    authorize ContactTypeGroup
     @contact_type_group = ContactTypeGroup.new(contact_type_group_params.merge(casa_org: current_organization))
 
     if @contact_type_group.save
       redirect_to edit_casa_org_path(current_organization), notice: "Contact Type Group was successfully created."
     else
-      render :new
+      render :new, status: :unprocessable_content
     end
   end
 
   def edit
+    authorize @contact_type_group
   end
 
   def update
+    authorize @contact_type_group
     if @contact_type_group.update(contact_type_group_params)
       redirect_to edit_casa_org_path(current_organization), notice: "Contact Type Group was successfully updated."
     else
-      render :edit
+      render :edit, status: :unprocessable_content
     end
   end
 
@@ -34,6 +40,6 @@ class ContactTypeGroupsController < ApplicationController
   end
 
   def set_contact_type_group
-    @contact_type_group = ContactTypeGroup.find(params[:id])
+    @contact_type_group = current_organization.contact_type_groups.find(params[:id])
   end
 end

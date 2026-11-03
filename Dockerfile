@@ -1,46 +1,48 @@
-FROM ruby:2.7.1-alpine AS builder
+ARG ROOT=/usr/src/app/
 
-LABEL maintainer="jeanine@littleforestconsulting.com"
+# available alpine packages: https://pkgs.alpinelinux.org/packages
+
+FROM node:24-alpine AS node-source
+
+FROM ruby:4.0.6-alpine AS build
+ARG ROOT
+WORKDIR $ROOT
 
 RUN apk update && apk upgrade && apk add --update --no-cache \
   build-base \
   curl-dev \
-  nodejs \
+  libffi-dev \
+  yaml-dev \
+  linux-headers \
   postgresql-dev \
-  tzdata \
-  vim \
-  yarn && rm -rf /var/cache/apk/*
+  tzdata
 
-ARG RAILS_ROOT=/usr/src/app/
-WORKDIR $RAILS_ROOT
+RUN bundle config set force_ruby_platform true
 
-COPY package*.json yarn.lock $RAILS_ROOT
-RUN yarn install --check-files
+COPY Gemfile* $ROOT
+RUN bundle install
 
-COPY Gemfile* $RAILS_ROOT
-RUN bundle config --global frozen 1 && bundle install
-
-COPY . .
-
-### BUILD STEP DONE ###
-
-FROM ruby:2.7.1-alpine
-
-ARG RAILS_ROOT=/usr/src/app/
+FROM ruby:4.0.6-alpine
+ARG ROOT
+WORKDIR $ROOT
 
 RUN apk update && apk upgrade && apk add --update --no-cache \
   bash \
+  build-base \
+  curl \
   imagemagick \
-  nodejs \
   postgresql-client \
   tzdata \
   vim \
-  yarn && rm -rf /var/cache/apk/*
+  && rm -rf /var/cache/apk/*
 
-WORKDIR $RAILS_ROOT
+COPY . .
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+RUN npm ci
 
-COPY --from=builder $RAILS_ROOT $RAILS_ROOT
-COPY --from=builder /usr/local/bundle/ /usr/local/bundle/
+COPY --from=build /usr/local/bundle/ /usr/local/bundle/
 
 EXPOSE 3000
 

@@ -1,4 +1,6 @@
 module ApplicationHelper
+  include Pagy::Frontend
+
   def body_class
     qualified_controller_name = controller.controller_path.tr("/", "-")
     "#{qualified_controller_name} #{qualified_controller_name}-#{controller.action_name}"
@@ -15,8 +17,7 @@ module ApplicationHelper
   def page_header
     return default_page_header unless user_signed_in?
 
-    page_header_text = current_organization.display_name
-    user_signed_in? ? link_to(page_header_text, root_path) : page_header_text
+    current_organization.display_name
   end
 
   def default_page_header
@@ -44,5 +45,17 @@ module ApplicationHelper
 
   def og_tag(type, options = {})
     tag.meta(property: "og:#{type}", **options)
+  end
+
+  def resource_name
+    :user
+  end
+
+  def resource
+    @resource ||= User.new
+  end
+
+  def devise_mapping
+    @devise_mapping ||= Devise.mappings[:user]
   end
 end

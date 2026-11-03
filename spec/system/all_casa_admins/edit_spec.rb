@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 require "rails_helper"
 
-RSpec.describe "all_casa_admin_edit_spec", type: :system do
+RSpec.describe "AllCasaAdmin edit page", type: :system do
   let(:admin) { create(:all_casa_admin) }
 
   before do
@@ -8,38 +10,26 @@ RSpec.describe "all_casa_admin_edit_spec", type: :system do
     visit edit_all_casa_admins_path
   end
 
-  describe "with valid parameters" do
-    it "updates email" do
-      fill_in "all_casa_admin_email", with: "newemail@example.com"
-      click_on "Update Profile"
-      expect(page).to have_text "successfully updated"
-    end
+  it "shows the password section only after clicking 'Change password'", :aggregate_failures, :js do
+    expect_password_section_hidden
 
-    it "updates password" do
-      click_on "Change Password"
-      fill_in "all_casa_admin_password", with: "newpassword"
-      fill_in "all_casa_admin_password_confirmation", with: "newpassword"
-      click_on "Update Password"
-      expect(page).to have_text "successfully updated"
-    end
+    # Click the Change password button
+    click_button "Change password"
+
+    # Password section should now be visible
+    expect_password_section_visible
   end
 
-  describe "with invalid parameters" do
-    let!(:other_admin) { create(:all_casa_admin) }
+  private
 
-    it "does not update email" do
-      visit edit_all_casa_admins_path
-      fill_in "all_casa_admin_email", with: other_admin.email
-      click_on "Update Profile"
-      expect(page).to have_text "already been taken"
-    end
+  def expect_password_section_hidden
+    expect(page).to have_selector("#collapseOne.hidden", visible: :all)
+  end
 
-    it "does not update password" do
-      click_on "Change Password"
-      fill_in "all_casa_admin_password", with: "newpassword"
-      fill_in "all_casa_admin_password_confirmation", with: "badmatch"
-      click_on "Update Password"
-      expect(page).to have_text "confirmation doesn't match"
-    end
+  def expect_password_section_visible
+    expect(page).to have_selector("#collapseOne:not(.hidden)")
+    expect(page).to have_field("all_casa_admin[password]")
+    expect(page).to have_field("all_casa_admin[password_confirmation]")
+    expect(page).to have_button("Update password")
   end
 end

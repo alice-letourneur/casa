@@ -1,0 +1,127 @@
+module FillInCaseContactFields
+  DETAILS_ID = "#contact-form-details"
+  NOTES_ID = "#contact-form-notes"
+  TOPIC_VALUE_CLASS = ".contact-topic-answer-input"
+  TOPIC_SELECT_CLASS = ".contact-topic-id-select"
+  REIMBURSEMENT_ID = "#contact-form-reimbursement"
+  EXPENSE_AMOUNT_CLASS = ".expense-amount-input"
+  EXPENSE_DESCRIBE_CLASS = ".expense-describe-input"
+
+  def fill_in_contact_details(case_numbers: [], contact_types: [], contact_made: true,
+    medium: "In person", occurred_on: Time.zone.today, hours: nil, minutes: nil)
+    within DETAILS_ID do
+      within "#draft-case-id-selector" do
+        if case_numbers.nil?
+          all(:element, "a", title: "Remove this item").each(&:click)
+        end
+
+        if case_numbers.present?
+          find(".ts-control").click
+
+          # Click the option ROW, the way a user does. This used to reach for the row's sibling
+          # `<input>`, but the tick is an inert <span> now (a real checkbox inside `role="option"` is
+          # axe `nested-interactive`), so there is no input and nothing to ask `.checked?`. TomSelect
+          # puts `selected` on a chosen row, and clicking a chosen row would DEselect it.
+          Array.wrap(case_numbers).each do |case_number|
+            option = find(".ts-dropdown-content .option", text: case_number, match: :first)
+            option.click unless option[:class].to_s.split.include?("selected")
+          end
+
+          find(".ts-control").click
+        end
+      end
+
+      fill_in "case_contact_occurred_at", with: occurred_on if occurred_on
+
+      if contact_types.present?
+        contact_types.each do |contact_type|
+          check contact_type
+        end
+      elsif !contact_types.nil?
+        contact_type = ContactType.first
+        check contact_type.name
+      end
+
+      choose medium if medium
+
+      if contact_made
+        check "Contact was made"
+      else
+        uncheck "Contact was made"
+      end
+
+      fill_in "case_contact_duration_hours", with: hours if hours
+      fill_in "case_contact_duration_minutes", with: minutes if minutes
+    end
+  end
+  alias_method :complete_details_page, :fill_in_contact_details
+
+  def fill_in_notes(notes: nil, contact_topic_answers_attrs: [])
+    within NOTES_ID do
+      Array.wrap(contact_topic_answers_attrs).each do |attributes|
+        answer_topic_unscoped attributes[:question], attributes[:answer]
+      end
+
+      if notes.present?
+        fill_in "Additional notes", with: notes
+      end
+    end
+  end
+  alias_method :complete_notes_page, :fill_in_notes
+
+  # @param miles [Integer]
+  # @param want_reimbursement [Boolean]
+  # @param address [String]
+  def fill_in_mileage(miles: 0, want_reimbursement: false, address: nil)
+    within REIMBURSEMENT_ID do
+      check_reimbursement(want_reimbursement)
+      return unless want_reimbursement
+
+      fill_in "case_contact_miles_driven", with: miles if miles.present?
+      fill_in "case_contact_volunteer_address_line_1", with: address if address
+    end
+  end
+  alias_method :fill_in_expenses_page, :fill_in_mileage
+
+  def choose_medium(medium)
+    choose medium if medium
+  end
+
+  def check_reimbursement(want_reimbursement = true)
+    if want_reimbursement
+      check "Request travel or other reimbursement"
+    else
+      uncheck "Request travel or other reimbursement"
+    end
+  end
+
+  def fill_expense_fields(amount, describe, index: nil)
+    within REIMBURSEMENT_ID do
+      amount_field = index.present? ? all(EXPENSE_AMOUNT_CLASS)[index] : all(EXPENSE_AMOUNT_CLASS).last
+      describe_field = index.present? ? all(EXPENSE_DESCRIBE_CLASS)[index] : all(EXPENSE_DESCRIBE_CLASS).last
+      amount_field.fill_in(with: amount) if amount
+      describe_field.fill_in(with: describe) if describe
+    end
+  end
+
+  def answer_topic(question, answer, index: nil)
+    within NOTES_ID do
+      answer_topic_unscoped(question, answer, index:)
+    end
+  end
+
+  private
+
+  # use when already 'within' notes div
+  # Fixed-topic checklist: check the topic (reveals + creates its answer), then fill its notes.
+  def answer_topic_unscoped(question, answer, index: nil)
+    group = find("[data-topic-group]", text: question)
+    checkbox = group.find("input[type='checkbox']")
+    checkbox.check unless checkbox.checked?
+    group.find(TOPIC_VALUE_CLASS).set(answer) if answer
+  end
+end
+
+RSpec.configure do |config|
+  config.include FillInCaseContactFields, type: :system
+end

@@ -1,127 +1,175 @@
 require "rails_helper"
 
 RSpec.describe "/case_contacts", type: :request do
-  let(:organization) { create(:casa_org) }
+  let(:organization) { build(:casa_org) }
+  let(:admin) { create(:casa_admin, casa_org: organization) }
   let(:volunteer) { create(:volunteer, casa_org: organization) }
-  let(:other_volunteer) { create(:volunteer, casa_org: organization) }
-  let(:casa_case) { create(:casa_case, casa_org: organization) }
 
-  let(:valid_attributes) do
-    attributes_for(:case_contact, casa_case: casa_case).merge(
-      creator: volunteer,
-      casa_case_id: [
-        create(:casa_case, volunteers: [volunteer], casa_org: organization).id,
-        create(:casa_case, volunteers: [volunteer], casa_org: organization).id
-      ]
-    )
-  end
+  before { sign_in admin }
 
-  let(:invalid_attributes) do
-    {
-      creator: nil,
-      casa_case_id: [create(:casa_case, volunteers: [volunteer], casa_org: organization).id],
-      occurred_at: Time.zone.now
-    }
-  end
+  describe "GET /index" do
+    subject(:request) do
+      get case_contacts_path(filterrific: filterrific)
 
-  before { sign_in volunteer }
+      response
+    end
 
-  describe "POST /create" do
-    context "with valid parameters" do
-      it "does create two new CaseContacts" do
-        expect {
-          post case_contacts_url, params: {case_contact: valid_attributes}
-        }.to change(CaseContact, :count).by(2)
+    let!(:casa_case) { create(:casa_case, casa_org: organization) }
+    let!(:past_contact) { create(:case_contact, casa_case: casa_case, occurred_at: 3.weeks.ago) }
+    let!(:recent_contact) { create(:case_contact, casa_case: casa_case, occurred_at: 3.days.ago) }
+    let(:filterrific) { {} }
+
+    it { is_expected.to have_http_status(:success) }
+
+    it "returns all case contacts" do
+      page = request.parsed_body.to_html
+      expect(page).to include(past_contact.creator.display_name, recent_contact.creator.display_name)
+    end
+
+    context "with filters applied" do
+      let(:filterrific) { {occurred_starting_at: 1.week.ago} }
+
+      it "returns all case contacts" do
+        page = request.parsed_body.to_html
+        expect(page).to include(recent_contact.creator.display_name)
+        expect(page).not_to include(past_contact.creator.display_name)
       end
     end
 
-    context "with invalid parameters" do
-      it "does not create a new CaseContact" do
-        expect { post case_contacts_url, params: {case_contact: invalid_attributes} }.to change(
-          CaseContact,
-          :count
-        ).by(0)
-      end
+    context "when logged in as a volunteer" do
+      let(:assigned_case) { create(:casa_case, :with_one_case_assignment, casa_org: organization) }
+      let(:unassigned_case) { casa_case }
+      let(:volunteer) { assigned_case.assigned_volunteers.first }
+      let!(:assigned_case_contact) { create(:case_contact, casa_case: assigned_case, creator: volunteer) }
+      let!(:unassigned_case_contact) { create(:case_contact, casa_case: unassigned_case, creator: volunteer, duration_minutes: 180) }
 
-      it "renders a successful response (i.e. to display the new template)" do
-        post case_contacts_url, params: {case_contact: invalid_attributes}
-        expect(response).to be_successful
-      end
-    end
+      before { sign_in volunteer }
 
-    context "with no cases selected" do
-      it "presents the user with a relevant error message" do
-        expect {
-          post case_contacts_url, params: {
-            case_contact: valid_attributes.merge(casa_case_id: [])
-          }
-        }.to change(CaseContact, :count).by(0)
-
-        expect(response).to be_successful
-        expect(flash[:alert]).to be_present
+      it "returns only currently assigned cases" do
+        page = request.parsed_body.to_html
+        expect(page).to include("60 minutes")
+        expect(page).not_to include("3 hours")
       end
     end
   end
 
-  describe "PATCH /update" do
-    context "with valid parameters" do
-      it "updates the requested case_contact and redirects to the root path" do
-        case_contact = create(:case_contact, creator: volunteer, casa_case: casa_case)
-        contact_type = create(:contact_type, name: "Attorney")
+  describe "GET /new" do
+    subject(:request) do
+      get new_case_contact_path
 
-        patch case_contact_url(case_contact), params: {
-          case_contact: {
-            case_contact_contact_type_attributes: [{contact_type_id: contact_type.id}],
-            duration_minutes: 60
-          }
-        }
-        expect(response).to redirect_to(casa_case_path(case_contact.casa_case_id))
-
-        expect(case_contact.reload.contact_types.first.name).to eq "Attorney"
-      end
+      response
     end
 
-    context "as another volunteer" do
-      before { sign_in other_volunteer }
+    it { is_expected.to have_http_status(:success) }
 
-      it "does not allow update of case contacts created by other volunteers" do
-        contact_type = create(:contact_type, name: "Attorney")
-        contact_type2 = create(:contact_type, name: "Therapist")
-        case_contact = create(:case_contact, creator: volunteer, casa_case: casa_case, contact_types: [contact_type])
-
-        patch case_contact_url(case_contact), params: {
-          case_contact: {
-            contact_types: [contact_type2]
-          }
-        }
-        expect(response).to redirect_to(root_path)
-
-        case_contact.reload
-        expect(case_contact.contact_types.first.name).to eq("Attorney")
-      end
+    # Opening the form used to INSERT a draft, so every abandoned click left an empty row behind.
+    # It now renders an unsaved record; #create persists it at the first real save.
+    it "renders the form without creating anything" do
+      expect { request }.not_to change(CaseContact, :count)
+      expect(response.body).to include("case-contact-form")
     end
 
-    context "with invalid parameters" do
-      it "renders a successful response (i.e. to display the edit template)" do
-        case_contact = create(:case_contact, creator: volunteer, casa_case: casa_case)
-        patch case_contact_url(case_contact), params: {case_contact: invalid_attributes}
-        expect(response).to be_successful
+    context "when current org has contact topics" do
+      let(:contact_topics) do
+        [build(:contact_topic, active: true, soft_delete: false)]
       end
+      let(:organization) { create(:casa_org, contact_topics:) }
+
+      it "does not create contact topic answers" do
+        expect { request }
+          .to not_change(CaseContact, :count)
+          .and not_change(ContactTopicAnswer, :count)
+      end
+    end
+  end
+
+  describe "GET /edit" do
+    subject(:request) do
+      get edit_case_contact_url(case_contact)
+
+      response
+    end
+
+    let(:case_contact) { create(:case_contact, casa_case: create(:casa_case, :with_case_assignments), notes: "Notes") }
+
+    it { is_expected.to have_http_status(:redirect) }
+
+    it "redirects to case contact form" do
+      request
+      expect(response).to redirect_to(case_contact_form_path(:details, case_contact_id: case_contact.id))
+    end
+  end
+
+  describe "GET /drafts" do
+    subject(:request) do
+      get case_contacts_drafts_path
+
+      response
+    end
+
+    it { is_expected.to have_http_status(:success) }
+
+    context "when user is volunteer" do
+      before { sign_in volunteer }
+
+      it { is_expected.to have_http_status(:redirect) }
     end
   end
 
   describe "DELETE /destroy" do
-    it "destroys the requested case_contact" do
-      case_contact = create(:case_contact, creator: volunteer, casa_case: casa_case)
-      expect {
-        delete case_contact_url(case_contact)
-      }.to change(CaseContact, :count).by(-1)
+    subject(:request) do
+      delete case_contact_path(case_contact), headers: {HTTP_REFERER: case_contacts_path}
+
+      response
     end
 
-    it "redirects to the case_contacts list" do
-      case_contact = create(:case_contact, creator: volunteer, casa_case: casa_case)
-      delete case_contact_url(case_contact)
-      expect(response).to redirect_to(case_contacts_url)
+    let(:case_contact) { create(:case_contact) }
+
+    it { is_expected.to redirect_to(case_contacts_path) }
+
+    it "shows correct flash message" do
+      request
+      expect(flash[:notice]).to eq("Contact is successfully deleted.")
+    end
+
+    it "soft deletes the case_contact" do
+      expect { request }.to change { case_contact.reload.deleted? }.from(false).to(true)
+    end
+  end
+
+  describe "GET /restore" do
+    subject(:request) do
+      post restore_case_contact_path(case_contact), headers: {HTTP_REFERER: case_contacts_path}
+
+      response
+    end
+
+    let(:case_contact) { create(:case_contact) }
+
+    before { case_contact.destroy }
+
+    it { is_expected.to redirect_to(case_contacts_path) }
+
+    it "shows correct flash message" do
+      request
+      expect(flash[:notice]).to eq("Contact is successfully restored.")
+    end
+
+    it "soft deletes the case_contact" do
+      expect { request }.to change { case_contact.reload.deleted? }.from(true).to(false)
+    end
+  end
+
+  describe "GET /leave" do
+    subject(:request) do
+      get leave_case_contacts_form_path
+
+      response
+    end
+
+    it "redirects back to referer or fallback location" do
+      request
+      expect(response).to redirect_to(case_contacts_path)
     end
   end
 end

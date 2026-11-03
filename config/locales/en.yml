@@ -28,27 +28,60 @@
 #
 # To learn more, please read the Rails Internationalization guide
 # available at https://guides.rubyonrails.org/i18n.html.
-
+---
 en:
-  hello: "Hello world"
-  pundit:
-    default: "Sorry, you are not authorized to perform this action."
-    casa_case_policy:
-      new?: "Sorry, you are not authorized to create CASA cases."
-    case_contact_policy:
-      edit?: "Sorry, you can only edit case contacts that you have logged."
-      update?: "Sorry, you can only edit case contacts that you have logged."
-  forms:
-    casa_admin:
-      mark_inactive_warning: "WARNING: Marking an admin inactive will make them unable to login. Are you sure you want to do this?"
-    case_contact:
-      notes_placeholder: "Please refer to individuals by their roles instead of by their names. Ex: My supervisor joined me for a call with the social worker to discuss my youth."
-    volunteer:
-      mark_inactive_warning: "WARNING: Marking a volunteer inactive will make them unable to login. They will receive an email saying their account has been marked inactive. Are you sure you want to do this?"
-  page:
-    meta:
-      title: CASA Volunteer Tracking
-      description: Volunteer activity tracking for CASA volunteers, supervisors, and administrators.
+  activerecord:
+    attributes:
+      additional_expense:
+        other_expenses_amount: Amount
+        other_expenses_describe: Description
+      case_contact:
+        case_contact_contact_types:
+          one: Contact type
+          other: Contact types
+        contact_types:
+          one: Contact type
+          other: Contact types
+        contact_topic_answers:
+          one: Discussion topic
+          other: Discussion topics
+        draft_case_ids:
+          one: CASA case
+          other: CASA cases
+        occurred_at: Date
+        volunteer_address: Mailing address
+      case_contact/additional_expenses:
+        other_expense_amount: Other expense amount
+        other_expenses_describe: Other expense details
+      case_contact/contact_topic_answers:
+        contact_topic: Discussion topic
+        value: Discussion notes
+    errors:
+      messages:
+        cant_be_future: can't be in the future
+        must_be_selected: must be selected
+        must_be_true_or_false: must be true or false
+        email_uniqueness: This email is already in use. If it does not appear on your roster, it may be associated with another CASA organization. Please use a different email address.
   time:
     formats:
-      day_and_date: "%A, %v"
+      day_and_date: "%A, %b %d, %Y"
+      standard: "%m-%d-%Y"
+      contact_occurred_at: "%Y%m%d%H%M%s"
+      full: "%B %-d, %Y"
+      youth_date_of_birth: "%B %Y"
+      short_date: "%-m/%d"
+      long_date: "%m/%d/%y"
+      edit_profile: "%B %d, %Y at %I:%M %p %Z"
+      time_on_date: "%-I:%-M %p on %m-%e-%Y"
+  date:
+    formats:
+      default: "%m/%d/%Y"
+      full: "%B %-d, %Y"
+      long: "%B %d, %Y"
+      short: "%b %d"
+      year_first: "%Y-%m-%d"
+  imports:
+    labels:
+      casa_case: "CASA case"
+      volunteer: "Volunteer"
+      supervisor: "Supervisor"

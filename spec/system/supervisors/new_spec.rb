@@ -1,0 +1,101 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+
+RSpec.shared_examples "user redirect with error" do |user_role|
+  let(:user) { create(user_role) }
+
+  before { sign_in user }
+
+  it "redirects the user with an error message" do
+    visit new_supervisor_path
+
+    expect(page).to have_selector(".alert", text: "Sorry, you are not authorized to perform this action.")
+  end
+end
+
+RSpec.describe "supervisors/new", type: :system do
+  context "when logged in as an admin" do
+    let(:admin) { create(:casa_admin) }
+    let(:new_supervisor_name) { Faker::Name.name }
+    let(:new_supervisor_email) { Faker::Internet.email }
+    let(:new_supervisor_phone_number) { "1234567890" }
+
+    before do
+      # Stub the request to the URL shortener service (needed if phone is provided)
+      stub_request(:post, "https://api.short.io/links")
+        .to_return(
+          status: 200,
+          body: {shortURL: "https://short.url/example"}.to_json,
+          headers: {"Content-Type" => "application/json"}
+        )
+
+      sign_in admin
+      visit new_supervisor_path
+    end
+
+    context "with valid form submission" do
+      let(:new_supervisor) { User.find_by(email: new_supervisor_email) }
+
+      before do
+        fill_in "Email", with: new_supervisor_email
+        fill_in "Display name", with: new_supervisor_name
+        fill_in "Phone number", with: new_supervisor_phone_number
+
+        click_on "Create supervisor"
+      end
+
+      it "shows a success message" do
+        expect(page).to have_text("New supervisor created successfully.")
+      end
+
+      it "redirects to the edit supervisor page", :aggregate_failures do
+        expect(page).to have_text("New supervisor created successfully.") # Guard to ensure redirection happened
+        expect(page).to have_current_path(edit_supervisor_path(new_supervisor))
+      end
+
+      it "persists the new supervisor with correct attributes", :aggregate_failures do
+        expect(new_supervisor).to be_present
+        expect(new_supervisor.display_name).to eq(new_supervisor_name)
+        expect(new_supervisor.phone_number).to end_with(new_supervisor_phone_number)
+        expect(new_supervisor.supervisor?).to be(true)
+        expect(new_supervisor.active?).to be(true)
+      end
+
+      it "sends an invitation email to the new supervisor", :aggregate_failures do
+        last_email = ActionMailer::Base.deliveries.last
+        expect(last_email.to).to eq [new_supervisor_email]
+        expect(last_email.subject).to have_text "CASA console invitation instructions"
+        expect(last_email.html_part.body.encoded).to have_text "Supervisor console account has been created for you"
+      end
+    end
+
+    context "with invalid form submission" do
+      before do
+        # Don't fill in any fields
+        click_on "Create supervisor"
+      end
+
+      it "does not create a new user" do
+        expect(User.count).to eq(1) # Only the admin user exists
+      end
+
+      it "shows validation error messages" do
+        expect(page).to have_text "Unable to save"
+      end
+
+      it "stays on the new supervisor page", :aggregate_failures do
+        expect(page).to have_text "Unable to save" # Guard to ensure no redirection happened
+        expect(page).to have_current_path(supervisors_path)
+      end
+    end
+  end
+
+  context "when logged in as a supervisor" do
+    include_examples "user redirect with error", :supervisor
+  end
+
+  context "when logged in as a volunteer" do
+    include_examples "user redirect with error", :volunteer
+  end
+end

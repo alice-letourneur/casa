@@ -1,0 +1,180 @@
+require "rails_helper"
+
+RSpec.describe "CaseContact AdditionalExpenses Form", :flipper, type: :system do
+  subject do
+    visit new_case_contact_path(casa_case)
+    fill_in_contact_details(contact_types: [contact_type.name])
+    fill_in_mileage want_reimbursement: true, miles: 50, address: "123 Params St"
+  end
+
+  let(:casa_org) { build :casa_org, :all_reimbursements_enabled }
+  let(:volunteer) { create :volunteer, :with_single_case, casa_org: }
+  let(:casa_case) { volunteer.casa_cases.first }
+  let!(:contact_type) { create :contact_type, casa_org: }
+
+  before do
+    allow(Flipper).to receive(:enabled?).with(:show_additional_expenses).and_return(true)
+    sign_in volunteer
+  end
+
+  it "is not rendered when casa org expenses disabled" do
+    casa_org.update! additional_expenses_enabled: false
+
+    subject
+    check "Request travel or other reimbursement"
+
+    expect(page).to have_no_field(class: "expense-amount-input", visible: :all)
+    expect(page).to have_no_field(class: "expense-describe-input", visible: :all)
+    expect(page).to have_no_button("Add another expense", visible: :all)
+  end
+
+  it "is not shown until Reimbursement is checked and Add Another Expense clicked", :js do
+    sign_in volunteer
+    visit new_case_contact_path casa_case
+    fill_in_contact_details
+
+    expect(page).to have_no_button "Add another expense"
+    check "Request travel or other reimbursement"
+    expect(page).to have_no_field(class: "expense-amount-input", visible: :all)
+    expect(page).to have_no_field(class: "expense-describe-input", visible: :all)
+    click_on "Add another expense"
+    expect(page).to have_field(class: "expense-describe-input")
+    expect(page).to have_field(class: "expense-amount-input")
+  end
+
+  it "does not submit values if reimbursement is cancelled (unchecked)", :js do
+    subject
+
+    click_on "Add another expense"
+    fill_expense_fields 5.34, "Lunch"
+    uncheck "Request travel or other reimbursement"
+
+    click_on "Submit"
+    expect(page).to have_text("Case contact successfully created")
+
+    expect(CaseContact.active.count).to eq(1)
+    case_contact = CaseContact.active.last
+    expect(case_contact.additional_expenses).to be_empty
+    expect(case_contact.miles_driven).to be_zero
+    expect(case_contact.want_driving_reimbursement).to be false
+  end
+
+  it "can remove an expense", :js do
+    subject
+    fill_in_contact_details
+    check "Request travel or other reimbursement"
+    fill_in "case_contact_miles_driven", with: 50
+    fill_in "case_contact_volunteer_address_line_1", with: "123 Params St"
+
+    click_on "Add another expense"
+    fill_expense_fields 1.50, "1st meal"
+    click_on "Add another expense"
+    fill_expense_fields 2.50, "2nd meal"
+    click_on "Add another expense"
+    fill_expense_fields 2.00, "3rd meal"
+
+    within "#contact-form-expenses" do
+      find(".remove-expense-button", match: :first).click
+    end
+    click_on "Remove expense" # design-system confirmation dialog
+
+    expect(page).to have_field(class: "expense-amount-input", count: 2)
+
+    click_on "Submit"
+    expect(page).to have_text("Case contact successfully created")
+
+    case_contact = CaseContact.active.last
+    expect(case_contact.additional_expenses.size).to eq(2)
+    expect(CaseContact.count).to eq(1)
+    expect(AdditionalExpense.count).to eq(2)
+  end
+
+  it "requires a description for each additional expense", :js do
+    subject
+
+    click_on "Add another expense"
+    fill_expense_fields 5.34, nil
+
+    click_on "Submit"
+
+    expect(page).to have_text("Other expense details can't be blank")
+
+    expect(CaseContact.active.count).to eq(0)
+    expect(AdditionalExpense.count).to eq(1)
+  end
+
+  context "when editing existing case contact expenses" do
+    subject { visit edit_case_contact_path case_contact }
+
+    let(:case_contact) { create :case_contact, :wants_reimbursement, casa_case:, creator: volunteer, contact_types: [contact_type] }
+    let!(:additional_expenses) do
+      [
+        create(:additional_expense, case_contact:, other_expense_amount: 1.11, other_expenses_describe: "First Expense"),
+        create(:additional_expense, case_contact:, other_expense_amount: 2.22, other_expenses_describe: "Second Expense")
+      ]
+    end
+
+    it "shows existing expenses in the form" do
+      subject
+
+      expect(page).to have_field(class: "expense-amount-input", count: additional_expenses.size)
+      expect(page).to have_field(class: "expense-describe-input", count: additional_expenses.size)
+      expect(page).to have_field(class: "expense-amount-input", with: "1.11")
+      expect(page).to have_field(class: "expense-describe-input", with: "First Expense")
+      expect(page).to have_field(class: "expense-amount-input", with: "2.22")
+      expect(page).to have_field(class: "expense-describe-input", with: "Second Expense")
+      expect(page).to have_button "Add another expense"
+    end
+
+    it "allows removing expenses", :js do
+      subject
+
+      expect(page).to have_css(".expense-amount-input", count: 2)
+      expect(page).to have_css(".expense-describe-input", count: 2)
+
+      within "#contact-form-expenses" do
+        find(".remove-expense-button", match: :first).click
+      end
+      click_on "Remove expense" # design-system confirmation dialog
+
+      expect(page).to have_css(".expense-amount-input", count: 1)
+      expect(page).to have_css(".expense-describe-input", count: 1)
+
+      click_on "Submit"
+
+      expect(page).to have_text(/Case contact .* was successfully updated./)
+
+      expect(CaseContact.active.count).to eq(1)
+      expect(AdditionalExpense.count).to eq(1)
+      expect(case_contact.reload.additional_expenses.size).to eq(1)
+    end
+
+    it "keeps the expense when the removal is cancelled", :js do
+      subject
+
+      within "#contact-form-expenses" do
+        find(".remove-expense-button", match: :first).click
+      end
+      click_on "Cancel"
+
+      expect(page).to have_css(".expense-amount-input", count: 2)
+
+      click_on "Submit"
+      expect(page).to have_text(/Case contact .* was successfully updated./)
+      expect(case_contact.reload.additional_expenses.size).to eq(2)
+    end
+
+    it "can add an expense", :js do
+      subject
+
+      click_on "Add another expense"
+      fill_expense_fields 11.50, "Gas"
+      click_on "Submit"
+
+      expect(page).to have_text(/Case contact .* was successfully updated./)
+
+      expect(case_contact.reload.additional_expenses.size).to eq(3)
+      expect(AdditionalExpense.count).to eq(3)
+    end
+  end
+end

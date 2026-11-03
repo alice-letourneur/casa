@@ -10,6 +10,9 @@ Devise.setup do |config|
   # by default. You can change it below and use your own secret key.
   # config.secret_key = 'a42b150b56c158d6e064aa257c8434390c921811007f42c5aa16c7455b78e3777087c5a4bcf18bfb0886fdd9296dec34eaa02fc0b47bed58417347eba971ee2d'
 
+  # Fixes rspec triggering Rails.application.secrets deprecation warning for Rails 7.1.0 upgrade
+  config.secret_key = Rails.application.secret_key_base
+
   # ==> Controller configuration
   # Configure the parent class to the devise controllers.
   # config.parent_controller = 'DeviseController'
@@ -24,7 +27,8 @@ Devise.setup do |config|
   # config.mailer = 'Devise::Mailer'
 
   # Configure the parent class responsible to send e-mails.
-  # config.parent_mailer = 'ActionMailer::Base'
+  # Inherit ApplicationMailer so Devise emails use the shared design-system mailer layout.
+  config.parent_mailer = "ApplicationMailer"
 
   # ==> ORM configuration
   # Load and configure the ORM. Supports :active_record (default) and
@@ -117,7 +121,7 @@ Devise.setup do |config|
   # config.pepper = 'cd6eaac91bb902fefeb87724dc41ea5023881a0b3044bbf4c23178147d2a8d883265a58105ab7c549a7bb5cf3a732f253ab4a17f26e44eefaeacb37f2ee13278'
 
   # Send a notification to the original email when the user's email is changed.
-  # config.send_email_changed_notification = false
+  config.send_email_changed_notification = true
 
   # Send a notification email when the user's password is changed.
   # config.send_password_change_notification = false
@@ -215,7 +219,7 @@ Devise.setup do |config|
 
   # ==> Configuration for :validatable
   # Range for password length.
-  config.password_length = 6..128
+  config.password_length = 8..128
 
   # Email regex used to validate email formats. It simply asserts that
   # one (and only one) @ exists in the given string. This is mainly
@@ -225,7 +229,7 @@ Devise.setup do |config|
   # ==> Configuration for :timeoutable
   # The time you want to timeout the user session without activity. After this
   # time the user will be asked for credentials again. Default is 30 minutes.
-  config.timeout_in = 1.hour
+  config.timeout_in = 3.hours
 
   # ==> Configuration for :lockable
   # Defines which strategy will be used to lock an account.
@@ -300,7 +304,7 @@ Devise.setup do |config|
   # should add them to the navigational formats lists.
   #
   # The "*/*" below is required to match Internet Explorer requests.
-  # config.navigational_formats = ['*/*', :html]
+  config.navigational_formats = ["*/*", :html]
 
   # The default HTTP method used to sign out a resource. Default is :delete.
   config.sign_out_via = :get

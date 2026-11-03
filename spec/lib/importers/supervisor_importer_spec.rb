@@ -1,18 +1,20 @@
 require "rails_helper"
 
 RSpec.describe SupervisorImporter do
-  let!(:import_user) { create(:casa_admin) }
+  let!(:import_user) { build_stubbed(:casa_admin) }
   let(:casa_org_id) { import_user.casa_org.id }
 
   # Use of the static method SupervisorImporter.import_volunteers functions identically to SupervisorImporter.new(...).import_volunteers
   # but is preferred.
-  let(:import_file_path) { Rails.root.join("spec", "fixtures", "supervisors.csv") }
+  let(:supervisor_import_data_path) { file_fixture "supervisors.csv" }
 
   let(:supervisor_importer) do
-    importer = SupervisorImporter.new(import_file_path, casa_org_id)
-    allow(importer).to receive(:email_addresses_to_users) do |clazz, supervisor_volunteers|
-      create_list(:volunteer, supervisor_volunteers.split(",").size)
+    importer = SupervisorImporter.new(supervisor_import_data_path, casa_org_id)
+
+    allow(importer).to receive(:email_addresses_to_users) do |_clazz, supervisor_volunteers|
+      create_list(:volunteer, supervisor_volunteers.split(",").size, casa_org: import_user.casa_org)
     end
+
     importer
   end
 
@@ -33,48 +35,121 @@ RSpec.describe SupervisorImporter do
     before { supervisor_importer.import_supervisors }
 
     it "does not import duplicate supervisors from csv files" do
-      expect { supervisor_importer.import_supervisors }.to change(Supervisor, :count).by(0)
+      expect { supervisor_importer.import_supervisors }.not_to change(Supervisor, :count)
     end
 
-    it "returns an error message when there are volunteers not imported" do
-      alert = SupervisorImporter.new(import_file_path, import_user.casa_org.id).import_supervisors
-      expect(alert[:type]).to eq(:error)
-      expect(alert[:message]).to include("Not all rows were imported.")
+    context "when any volunteer could not be assigned to the supervisor during the import" do
+      let!(:existing_volunteer) { build(:volunteer, email: "volunteer1@example.net") }
+      let(:supervisor_import_data_path) { file_fixture "supervisor_volunteers.csv" }
 
-      import_user = create(:casa_admin)
+      it "returns an error message" do
+        alert = SupervisorImporter.new(supervisor_import_data_path, casa_org_id).import_supervisors
 
-      import_file_path = Rails.root.join("spec", "fixtures", "volunteers.csv")
-      VolunteerImporter.new(import_file_path, import_user.casa_org.id).import_volunteers
+        expect(alert[:type]).to eq(:error)
+        expect(alert[:message]).to include("Not all rows were imported.")
+      end
 
-      import_supervisor_path = Rails.root.join("spec", "fixtures", "supervisors.csv")
-      SupervisorImporter.new(import_supervisor_path, import_user.casa_org.id).import_supervisors
+      context "because the volunteer has already been assigned to a supervisor" do
+        let!(:supervisor_volunteer) { create(:supervisor_volunteer, volunteer: existing_volunteer) }
 
-      alert = SupervisorImporter.new(import_file_path, import_user.casa_org.id).import_supervisors
-      expect(alert[:type]).to eq(:error)
-      expect(alert[:message]).to include("Not all rows were imported.")
+        it "returns an error message" do
+          alert = SupervisorImporter.new(supervisor_import_data_path, casa_org_id).import_supervisors
+
+          expect(alert[:type]).to eq(:error)
+          expect(alert[:exported_rows]).to include("Volunteer #{existing_volunteer.email} already has a supervisor")
+        end
+      end
+    end
+  end
+
+  context "when updating supervisors" do
+    let!(:existing_supervisor) { create(:supervisor, display_name: "#", email: "supervisor2@example.net") }
+
+    it "assigns unassigned volunteers" do
+      expect {
+        supervisor_importer.import_supervisors
+      }.to change(existing_supervisor.volunteers, :count).by(2)
     end
 
-    it "returns an error message when there are only some volunteers not imported" do
-      import_user = create(:casa_admin)
-      create(:volunteer, email: "volunteer1@example.net")
-      import_supervisor_path = Rails.root.join("spec", "fixtures", "supervisor_volunteers.csv")
-      alert = SupervisorImporter.new(import_supervisor_path, import_user.casa_org.id).import_supervisors
+    it "updates outdated supervisor fields" do
+      expect {
+        supervisor_importer.import_supervisors
+        existing_supervisor.reload
+      }.to change(existing_supervisor, :display_name).to("Supervisor Two")
+    end
+
+    it "updates phone number to valid number and turns on sms notifications" do
+      expect {
+        supervisor_importer.import_supervisors
+        existing_supervisor.reload
+      }.to change(existing_supervisor, :phone_number).to("+11111111111")
+        .and change(existing_supervisor, :receive_sms_notifications).to(true)
+    end
+  end
+
+  context "when row doesn't have e-mail address" do
+    let(:supervisor_import_data_path) { file_fixture "supervisors_without_email.csv" }
+
+    it "returns an error message" do
+      alert = supervisor_importer.import_supervisors
 
       expect(alert[:type]).to eq(:error)
-      # expect(alert[:message]).to include("You successfully imported 1 supervisors. The following supervisors were not imported: volunteer1@example.net was not assigned to supervisor s6@example.com on row #2")
-      # TODO bring back this functionality
+      expect(alert[:message]).to eq("You successfully imported 1 supervisors. Not all rows were imported.")
+      expect(alert[:exported_rows]).to include("Row does not contain e-mail address.")
+    end
+  end
+
+  context "when row doesn't have phone number" do
+    let(:supervisor_import_data_path) { file_fixture "supervisors_without_phone_numbers.csv" }
+
+    let!(:existing_supervisor_with_number) { create(:supervisor, display_name: "#", email: "supervisor1@example.net", phone_number: "+11111111111", receive_sms_notifications: true) }
+
+    it "updates phone number to be deleted and turns off sms notifications" do
+      expect {
+        supervisor_importer.import_supervisors
+        existing_supervisor_with_number.reload
+      }.to change(existing_supervisor_with_number, :phone_number).to("")
+        .and change(existing_supervisor_with_number, :receive_sms_notifications).to(false)
+    end
+  end
+
+  context "when phone number in row is invalid" do
+    let(:supervisor_import_data_path) { file_fixture "supervisors_invalid_phone_numbers.csv" }
+
+    it "returns an error message" do
+      alert = supervisor_importer.import_supervisors
+
+      expect(alert[:type]).to eq(:error)
+      expect(alert[:message]).to eq("Not all rows were imported.")
+      expect(alert[:exported_rows]).to include("Phone number must be 10 digits or 12 digits including country code (+1)")
     end
   end
 
   specify "static and instance methods have identical results" do
-    SupervisorImporter.new(import_file_path, casa_org_id).import_supervisors
+    SupervisorImporter.new(supervisor_import_data_path, casa_org_id).import_supervisors
     data_using_instance = Supervisor.pluck(:email).sort
 
-    Supervisor.delete_all
-    SupervisorImporter.import_supervisors(import_file_path, casa_org_id)
+    SentEmail.destroy_all
+    Supervisor.destroy_all
+    SupervisorImporter.import_supervisors(supervisor_import_data_path, casa_org_id)
     data_using_static = Supervisor.pluck(:email).sort
 
     expect(data_using_static).to eq(data_using_instance)
-    expect(data_using_static).to_not be_empty
+    expect(data_using_static).not_to be_empty
+  end
+
+  context "when the e-mails belong to users in another org" do
+    let(:other_org) { create(:casa_org) }
+    let!(:other_org_supervisor) do
+      create(:supervisor, casa_org: other_org, display_name: "Other Org", email: "supervisor1@example.net")
+    end
+    let!(:other_org_volunteer) { create(:volunteer, casa_org: other_org, email: "volunteer1@example.net") }
+
+    it "does not update the other org's supervisor or link the other org's volunteer" do
+      SupervisorImporter.import_supervisors(supervisor_import_data_path, casa_org_id)
+
+      expect(other_org_supervisor.reload.display_name).to eq("Other Org")
+      expect(other_org_volunteer.reload.supervisor).to be_nil
+    end
   end
 end

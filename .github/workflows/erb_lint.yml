@@ -1,0 +1,35 @@
+name: ERB lint
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.erb'
+      - '**/*.html'
+  pull_request:
+    branches:
+      - main
+      - rfg-event-2025
+    paths:
+      - '**/*.erb'
+      - '**/*.html'
+
+jobs:
+  erb_lint:
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@824c0e29fdfc7d689c191c27acc969d2d04b7dd8 # v1
+        with:
+          bundler-cache: true
+
+      - name: ERB lint
+        run: bundle exec erb_lint --lint-all

@@ -32,19 +32,19 @@ module CasaOrgPopulatorPresets
 
   def large_dataset_options
     {
-      case_count: 150,
+      case_count: 160,
       volunteer_count: 100,
-      supervisor_count: 5,
+      supervisor_count: 10,
       casa_admin_count: 3
     }
   end
 
   def for_environment
     {
-      "development" => CasaOrgPopulatorPresets.medium_dataset_options,
+      "development" => CasaOrgPopulatorPresets.small_dataset_options,
       "qa" => CasaOrgPopulatorPresets.large_dataset_options,
       "staging" => CasaOrgPopulatorPresets.large_dataset_options,
       "test" => CasaOrgPopulatorPresets.small_dataset_options
-    }[Rails.env]
+    }[ENV["APP_ENVIRONMENT"] || Rails.env]
   end
 end

@@ -11,20 +11,29 @@
 # properly added.
 
 ruby:
-- "**/*.rb"
-- "Gemfile*"
+- changed-files:
+  - any-glob-to-any-file: "**/*.rb"
+
+erb:
+- changed-files:
+  - any-glob-to-any-file: "**/*.erb"
 
 javascript:
-- "**/*.js"
-- "package*.json"
-- "yarn.lock"
+- changed-files:
+  - any-glob-to-any-file: ["**/*.js", "package*.json", "package-lock.json"]
 
-Tests! 🎉💖👏:
-- "app/javascript/__tests__/**.test.js"
-- "cypress/**/*.spec.js"
-- "spec/**/*_spec.rb"
+🧪 Tests:
+- changed-files:
+  - any-glob-to-any-file: ["app/javascript/__tests__/**.test.js", "spec/**/*_spec.rb"]
 
 dependencies:
-- "Gemfile*"
-- "package*.json"
-- "yarn.lock"
+- changed-files:
+  - any-glob-to-any-file: ["Gemfile*", "package*.json", "package-lock.json"]
+
+pundit:
+- changed-files:
+  - any-glob-to-any-file: "app/policies/**/*.rb"
+
+db:
+- changed-files:
+  - any-glob-to-any-file: "db/**/*"

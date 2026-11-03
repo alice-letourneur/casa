@@ -1,0 +1,52 @@
+require "rails_helper"
+
+RSpec.describe "other_duties/new", type: :system do
+  let(:casa_org) { build(:casa_org) }
+  let(:admin) { create(:casa_admin, casa_org: casa_org) }
+  let(:case_number) { "12345" }
+  let!(:next_year) { (Date.today.year + 1).to_s }
+  let(:court_date) { 21.days.from_now }
+
+  let(:organization) { build(:casa_org) }
+  let(:volunteer) { create(:volunteer, :with_casa_cases, casa_org: organization) }
+
+  before do
+    sign_in volunteer
+    visit root_path
+  end
+
+  context "as a volunteer", :js do
+    it "sees a New duty link" do
+      visit other_duties_path
+      expect(page).to have_link("New duty", href: new_other_duty_path)
+    end
+
+    it "sees all their other duties", :js do
+      volunteer_2 = create(:volunteer, display_name: "Other Volunteer")
+
+      other_duty_1 = create(:other_duty, notes: "Test 1", creator_id: volunteer.id)
+      other_duty_2 = create(:other_duty, notes: "Test 2", creator_id: volunteer.id)
+      other_duty_3 = create(:other_duty, notes: "Test 3", creator_id: volunteer_2.id)
+
+      visit other_duties_path
+
+      expect(page).to have_text("Other duties")
+      expect(page).to have_text(other_duty_1.notes)
+      expect(page).to have_text(other_duty_2.notes)
+      expect(page).not_to have_text(other_duty_3.notes)
+    end
+
+    it "has an error if a new duty is attempted to be created without any notes" do
+      visit other_duties_path
+      click_on "New duty"
+
+      click_on "Submit"
+
+      # Capybara's :validation_message filter, not `find(...).native.attribute(...)`. That call sits
+      # outside Capybara's synchronize, so when the element went stale while the page settled the
+      # StaleElementReferenceError was raised straight through instead of being retried. As a
+      # matcher filter this re-resolves the field on every attempt.
+      expect(page).to have_field("other_duty_notes", validation_message: /Please fill (in|out) this field./)
+    end
+  end
+end

@@ -1,13 +1,18 @@
 class UserParameters < SimpleDelegator
   def initialize(params, key = :user)
     params =
-      params.require(key).permit( # TODO BUG - admin create volunteer is broken
+      # casa_org_id, type and password are never taken from the request: callers set them server-side
+      # with with_organization / with_type / with_password, so a form can't move a user to another org,
+      # change their role, or set their password.
+      params.require(key).permit(
         :email,
-        :casa_org_id,
         :display_name,
-        :password,
+        :phone_number,
+        :date_of_birth,
         :active,
-        :type
+        :receive_reimbursement_email,
+        :monthly_learning_hours_report,
+        address_attributes: [:id, :content, :line_1, :line_2, :city, :state, :zip]
       )
 
     super(params)
@@ -38,13 +43,15 @@ class UserParameters < SimpleDelegator
     self
   end
 
-  def with_only(*keys)
-    params.slice!(*keys)
+  def with_only(*)
+    params.slice!(*)
     self
   end
 
   def without(*keys)
+    keys = keys.map(&:to_s)
     params.reject! { |key| keys.include?(key) }
+    self
   end
 
   private

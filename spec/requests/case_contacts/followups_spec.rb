@@ -1,0 +1,171 @@
+require "rails_helper"
+
+RSpec.describe "CaseContacts::FollowupsController", type: :request do
+  let(:volunteer) { create(:volunteer) }
+  let(:case_contact) { create(:case_contact, creator: volunteer) }
+
+  describe "POST /create" do
+    subject(:request) do
+      post case_contact_followups_path(case_contact), params: params
+
+      response
+    end
+
+    let(:notification_double) { double("FollowupNotifier") }
+    let(:params) { {note: "Hello, world!"} }
+
+    before do
+      sign_in volunteer
+      allow(FollowupNotifier).to receive(:with).and_return(notification_double)
+      allow(notification_double).to receive(:deliver)
+    end
+
+    it "creates a followup", :aggregate_failures do
+      expect { request }.to change(Followup, :count).by(1)
+
+      followup = Followup.last
+      expect(followup.note).to eq "Hello, world!"
+    end
+
+    context "when requested as JSON" do
+      subject(:request) do
+        post case_contact_followups_path(case_contact),
+          params: params,
+          headers: {"Accept" => "application/json"}
+
+        response
+      end
+
+      it "returns 204 No Content" do
+        request
+        expect(response).to have_http_status(:no_content)
+      end
+    end
+
+    it "sends a Followup Notifier to the case contact creator and the setter" do
+      request
+      followup = Followup.last
+      expect(FollowupNotifier).to(
+        have_received(:with).once.with(followup: followup, created_by: volunteer)
+      )
+      expect(notification_double).to have_received(:deliver).once.with(array_including(case_contact.creator, volunteer))
+    end
+
+    context "with invalid case_contact" do
+      it "responds with 404" do
+        post case_contact_followups_path(444444)
+        expect(response).to have_http_status(:not_found)
+      end
+    end
+
+    context "when the case contact has no casa_case" do
+      let(:case_contact) { build(:case_contact, casa_case: nil, creator: volunteer).tap { |cc| cc.save(validate: false) } }
+
+      it "redirects to the case contacts index without a UrlGenerationError" do
+        request
+        expect(response).to redirect_to(case_contacts_path)
+      end
+    end
+  end
+
+  describe "POST /create on someone else's case contact in the same org" do
+    let(:other_volunteer) { create(:volunteer, casa_org: volunteer.casa_org) }
+    let(:other_contact) { create(:case_contact, creator: other_volunteer, casa_case: create(:casa_case, casa_org: volunteer.casa_org)) }
+
+    it "is refused for another volunteer" do
+      sign_in volunteer
+
+      expect {
+        post case_contact_followups_path(other_contact), params: {note: "not mine"}
+      }.not_to change(Followup, :count)
+      expect(response).to redirect_to(root_url)
+    end
+
+    it "is allowed for a supervisor" do
+      sign_in create(:supervisor, casa_org: volunteer.casa_org)
+
+      expect {
+        post case_contact_followups_path(other_contact), params: {note: "from supervisor"}
+      }.to change(Followup, :count).by(1)
+    end
+
+    it "is allowed for an admin" do
+      sign_in create(:casa_admin, casa_org: volunteer.casa_org)
+
+      expect {
+        post case_contact_followups_path(other_contact), params: {note: "from admin"}
+      }.to change(Followup, :count).by(1)
+    end
+  end
+
+  describe "PATCH /resolve" do
+    let(:notification_double) { double("FollowupResolvedNotifier") }
+
+    before do
+      sign_in volunteer
+      allow(FollowupResolvedNotifier).to receive(:with).and_return(notification_double)
+      allow(notification_double).to receive(:deliver)
+    end
+
+    context "followup exists" do
+      subject(:request) do
+        patch resolve_followup_path(followup)
+
+        response
+      end
+
+      let(:followup) { create(:followup, case_contact: case_contact, creator: volunteer) }
+
+      it "marks it as :resolved" do
+        followup
+        expect { request }.to change { followup.reload.resolved? }.from(false).to(true)
+      end
+
+      context "when requested as JSON" do
+        subject(:request) do
+          patch resolve_followup_path(followup),
+            headers: {"Accept" => "application/json"}
+
+          response
+        end
+
+        it "returns 204 No Content" do
+          followup
+          request
+          expect(response).to have_http_status(:no_content)
+        end
+      end
+
+      context "when the resolver is the only party to notify" do
+        let(:case_contact) { create(:case_contact, creator: volunteer) }
+        let(:followup) { create(:followup, case_contact: case_contact, creator: volunteer) }
+
+        it "does not send a Followup Notifier" do
+          followup
+          expect(FollowupResolvedNotifier).not_to receive(:with)
+          expect { request }.to change { followup.reload.resolved? }.from(false).to(true)
+        end
+      end
+
+      context "when who resolves the followup is not the followup's creator" do
+        let(:case_contact) { create(:case_contact, creator: create(:volunteer, casa_org: volunteer.casa_org)) }
+        let(:followup) { create(:followup, case_contact: case_contact) }
+
+        it "sends a Followup Notifier to the case contact creator and the setter" do
+          request
+          expect(FollowupResolvedNotifier).to(
+            have_received(:with).once.with(followup: followup, created_by: volunteer)
+          )
+          expect(notification_double).to have_received(:deliver).once.with(array_including(case_contact.creator, followup.creator))
+        end
+      end
+    end
+
+    context "followup doesn't exists" do
+      it "responds with 404" do
+        patch resolve_followup_path(444444)
+        expect(response).to have_http_status(:not_found)
+      end
+    end
+  end
+end

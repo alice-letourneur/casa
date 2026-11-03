@@ -1,19 +1,128 @@
 class CasaCaseDecorator < Draper::Decorator
+  include ActionView::Helpers::DateHelper
+
   delegate_all
 
-  def transition_aged_youth_icon
-    object.transition_aged_youth ? "Yes 🐛🦋" : "No"
+  def case_contacts_ordered_by_occurred_at
+    object.case_contacts.order(occurred_at: :desc)
   end
 
-  def transition_aged_youth_only_icon
-    object.transition_aged_youth ? "🐛🦋" : ""
+  def case_contacts_latest
+    object.case_contacts.order(occurred_at: :desc, created_at: :desc).first
+  end
+
+  def case_contacts_latest_before(date)
+    object.case_contacts.where("occurred_at < ?", date).max_by(&:occurred_at)
+  end
+
+  def case_contacts_filtered_by_active_assignment_ordered_by_occurred_at
+    object.case_contacts
+      .joins("INNER JOIN case_assignments on case_assignments.casa_case_id = case_contacts.casa_case_id and case_assignments.volunteer_id = case_contacts.creator_id")
+      .where("case_assignments.hide_old_contacts = false")
+      .order(occurred_at: :desc)
   end
 
   def court_report_submission
-    object.court_report_submitted ? "Submitted" : "Not Submitted"
+    object.court_report_status.humanize
   end
 
-  def case_contacts_ordered_by_occurred_at
-    object.case_contacts.sort_by(&:occurred_at)
+  def court_report_submitted_date
+    I18n.l(object.court_report_submitted_at, format: :full, default: nil)
+  end
+
+  def court_report_select_option
+    volunteer_names = object.assigned_volunteers.map(&:display_name).join(",")
+
+    [
+      "#{object.case_number} - #{object.in_transition_age? ? "transition" : "non-transition"}(assigned to #{(volunteer_names.length > 0) ? volunteer_names : "no one"})",
+      object.case_number,
+      {
+        "data-transitioned": object.in_transition_age?,
+        "data-lookup": volunteer_names,
+        # The window this case's report should start from; the modal's JS copies it into the date field
+        # when the case is picked, since the default is per-case and the case is chosen in the modal.
+        "data-start-date": object.court_report_default_start_date.iso8601
+      }
+    ]
+  end
+
+  def date_in_care
+    return nil unless object.date_in_care
+    I18n.l(object.date_in_care, format: :youth_date_of_birth)
+  end
+
+  def duration_in_care
+    return nil unless object.date_in_care
+    "In care for #{time_ago_in_words(object.date_in_care)}"
+  end
+
+  def calendar_next_court_date
+    return nil unless object.next_court_date
+    {start: calendar_format(object.next_court_date.date), end: calendar_format(object.next_court_date.date + 1.day)}
+  end
+
+  def calendar_court_report_due_date
+    return nil unless object.court_report_due_date
+    {start: calendar_format(object.court_report_due_date), end: calendar_format(object.court_report_due_date + 1.day)}
+  end
+
+  def calendar_format(date)
+    I18n.l(date, format: :long, default: "")
+  end
+
+  def formatted_updated_at
+    I18n.l(object.updated_at, format: :standard, default: nil)
+  end
+
+  def formatted_next_court_date
+    upcoming = object.court_dates.select { |court_date| court_date.date.to_date >= Date.current }.min_by(&:date)
+    return nil unless upcoming
+    I18n.l(upcoming.date, format: :full, default: nil)
+  end
+
+  def inactive_class
+    (!object.active) ? "table-secondary" : ""
+  end
+
+  def status
+    object.active ? "Active" : "Inactive"
+  end
+
+  def successful_contacts_this_week
+    this_week = Date.today - 7.days..Date.today
+    object.case_contacts.where(occurred_at: this_week).where(contact_made: true).count
+  end
+
+  def successful_contacts_this_week_before(date)
+    this_week_before_date = Date.today - 7.days..date
+    object.case_contacts.where(occurred_at: this_week_before_date).where(contact_made: true).count
+  end
+
+  def unsuccessful_contacts_this_week
+    this_week = Date.today - 7.days..Date.today
+    object.case_contacts.where(occurred_at: this_week).where(contact_made: false).count
+  end
+
+  def unsuccessful_contacts_this_week_before(date)
+    this_week_before_date = Date.today - 7.days..date
+    object.case_contacts.where(occurred_at: this_week_before_date).where(contact_made: false).count
+  end
+
+  def emancipation_checklist_count
+    "#{object.casa_case_emancipation_categories.size} / #{h.emancipation_category_total_count}"
+  end
+
+  def show_contact_type?(contact_type_id)
+    object.casa_case_contact_types.map(&:contact_type_id).include?(contact_type_id)
+  end
+
+  def hash_for_multi_select
+    volunteers = object.volunteers.map(&:display_name).join(", ")
+
+    # No `group`: every case in this list is already scoped to the current org, so grouping by
+    # casa_org_id conveys nothing -- and once the multiselect started RENDERING optgroups (rather than
+    # only searching them) it drew that raw org id as a header, a stray unclickable number above the
+    # cases. Contact types keep their group because theirs is a real name.
+    {value: object.id, text: object.case_number, subtext: volunteers}
   end
 end

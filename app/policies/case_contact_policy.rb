@@ -1,81 +1,66 @@
-class CaseContactPolicy
-  attr_reader :user, :record
-
-  def initialize(user, record)
-    @user = user
-    @record = record
-  end
-
-  def index?
-    _is_creator_or_casa_admin?
+class CaseContactPolicy < ApplicationPolicy
+  def new?
+    is_creator? || admin_or_supervisor_same_org?
   end
 
   def show?
-    _is_creator_or_casa_admin?
-  end
-
-  def create?
-    _is_creator_or_casa_admin?
-  end
-
-  def new?
-    # Everyone should be allowed to create a case_contact
-    true
+    creator_or_supervisor_or_admin?
   end
 
   def update?
-    _is_creator_or_supervisor_or_casa_admin?
-  end
-
-  def edit?
-    _is_creator_or_supervisor_or_casa_admin?
+    creator_or_supervisor_or_admin?
   end
 
   def destroy?
-    _is_creator_or_casa_admin?
+    admin_or_supervisor_same_org? || (is_creator? && is_draft?)
   end
 
-  class Scope
-    attr_reader :user, :scope
+  def additional_expenses_allowed?
+    Flipper.enabled?(:show_additional_expenses) &&
+      current_organization.additional_expenses_enabled
+  end
 
-    def initialize(user, scope)
-      @user = user
-      @scope = scope
-    end
+  alias_method :index?, :admin_or_supervisor_or_volunteer?
+  alias_method :drafts?, :admin_or_supervisor?
+  # The form persists on first save rather than on open, so creating is the same permission as
+  # opening the form. Without this, create fell through to ApplicationPolicy#create? (admin only).
+  alias_method :create?, :new?
+  alias_method :edit?, :update?
+  # Discarding a draft is the same permission as deleting it (creator of a draft, or an
+  # admin/supervisor in the org). Named for the action so Pundit resolves it without an explicit
+  # query, like every other alias here.
+  alias_method :discard_draft?, :destroy?
+  alias_method :restore?, :is_admin_same_org?
 
+  class Scope < ApplicationPolicy::Scope
     def resolve
-      case @user
-      when CasaAdmin # scope.in_casa_administered_by(@user)
-        scope.all
+      case user
+      when CasaAdmin, Supervisor
+        scope.joins(:creator).where(creator: {casa_org: user.casa_org})
       when Volunteer
-        scope.where(casa_case: CasaCase.actively_assigned_to(@user), creator: @user)
-      when Supervisor
-        scope.all
+        scope.where(creator: user)
       else
-        raise "unrecognized user type #{@user.type}"
+        scope.none
       end
     end
   end
 
   private
 
-  def _is_creator_or_casa_admin?
-    _is_admin? || _is_creator?
+  def creator_or_supervisor_or_admin?
+    is_creator? || admin_or_supervisor_same_org?
   end
 
-  def _is_creator_or_supervisor_or_casa_admin?
-    _is_admin? || _is_creator? || _is_creator_supervisor?
+  def is_draft?
+    !record.active?
   end
 
-  def _is_admin?
-    user.casa_admin?
-  end
-
-  def _is_creator_supervisor?
-    record.creator&.supervisor == user
-  end
-
-  def _is_creator?
+  def is_creator?
     record.creator == user
+  end
+
+  def same_org?
+    record_org = record.casa_org || record.creator_casa_org
+    user&.casa_org_id == record_org&.id
   end
 end

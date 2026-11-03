@@ -2,31 +2,62 @@ class UserDecorator < Draper::Decorator
   delegate_all
 
   def status
-    return "Active" if object.active
-
-    "Inactive"
+    object.active ? "Active" : "Inactive"
   end
 
-  def name
-    return object.email if object.display_name.blank?
-
-    object.display_name
+  def local_time_zone
+    h.browser_time_zone
   end
 
-  # If all of a volunteers cases are not transition youth eligible, then
-  # we return "No", otherwise they have at least one transition youth eligible case
-  # and we return "Yes"
-  def assigned_to_transition_aged_youth?
-    volunteer_no_transition_youth_cases = object.casa_cases.pluck(:transition_aged_youth).all? false
+  # helper method to 'DRY' up the other methods : )
+  def formatted_timestamp(attribute)
+    format_key = context[:format] || :full
+    timestamp = object.public_send(attribute)
 
-    volunteer_no_transition_youth_cases ? "No" : "Yes 🐛🦋"
-  end
-
-  def last_contact_made
-    if object.most_recent_contact.nil?
-      "None ❌"
+    if format_key == :edit_profile
+      I18n.l(timestamp&.in_time_zone(local_time_zone), format: format_key, default: nil)
     else
-      object.most_recent_contact.occurred_at.strftime("%B %-e, %Y")
+      I18n.l(timestamp, format: format_key, default: nil)
     end
+  end
+
+  def formatted_created_at
+    formatted_timestamp(:created_at)
+  end
+
+  def formatted_updated_at
+    formatted_timestamp(:updated_at)
+  end
+
+  def formatted_current_sign_in_at
+    formatted_timestamp(:current_sign_in_at)
+  end
+
+  def formatted_invitation_accepted_at
+    formatted_timestamp(:invitation_accepted_at)
+  end
+
+  def formatted_reset_password_sent_at
+    formatted_timestamp(:reset_password_sent_at)
+  end
+
+  def formatted_invitation_sent_at
+    formatted_timestamp(:invitation_sent_at)
+  end
+
+  def formatted_birthday
+    return "" unless object.date_of_birth.respond_to?(:strftime)
+
+    object.date_of_birth.to_date.to_fs(:short_ordinal)
+  end
+
+  def formatted_date_of_birth
+    return "" unless object.date_of_birth.respond_to?(:strftime)
+
+    object.date_of_birth.to_date.to_fs(:slashes)
+  end
+
+  def email_confirmation_status
+    object.confirmed? ? "Confirmed" : "Not confirmed"
   end
 end

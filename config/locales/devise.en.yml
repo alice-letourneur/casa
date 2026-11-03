@@ -8,7 +8,6 @@ en:
       send_paranoid_instructions: "If your email address exists in our database, you will receive an email with instructions for how to confirm your email address in a few minutes."
     failure:
       already_authenticated: "You are already signed in."
-      admin_self_deactivated: "Your account is currently inactive. Please contact your CASA administrator for more details."
       inactive: "Your account is currently inactive. Please contact your supervisor for more details."
       invalid: "Invalid %{authentication_keys} or password."
       locked: "Your account is locked."
@@ -25,9 +24,9 @@ en:
       unlock_instructions:
         subject: "Unlock instructions"
       email_changed:
-        subject: "Email Changed"
+        subject: "Email changed"
       password_change:
-        subject: "Password Changed"
+        subject: "Password changed"
     omniauth_callbacks:
       failure: "Could not authenticate you from %{kind} because \"%{reason}\"."
       success: "Successfully authenticated from %{kind} account."
@@ -62,5 +61,6 @@ en:
       not_found: "not found"
       not_locked: "was not locked"
       not_saved:
+        password: "%{count} error(s) prohibited this password change from being saved:"
         one: "1 error prohibited this %{resource} from being saved:"
         other: "%{count} errors prohibited this %{resource} from being saved:"

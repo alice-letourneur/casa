@@ -1,0 +1,687 @@
+require "rails_helper"
+
+RSpec.describe "case_contacts/new", type: :system do
+  subject { visit new_case_contact_path casa_case }
+
+  let(:casa_org) { build :casa_org }
+  let(:contact_type_group) { build :contact_type_group, casa_org: }
+  let!(:school_contact_type) { create :contact_type, contact_type_group:, name: "School" }
+
+  let(:volunteer) { create :volunteer, :with_single_case, casa_org: }
+  let(:casa_admin) { build :casa_admin, casa_org: }
+  let(:casa_case) { volunteer.casa_cases.first }
+  let(:case_number) { casa_case.case_number }
+
+  let(:user) { volunteer }
+
+  before { sign_in user }
+
+  # Opening the form no longer inserts a row -- that is what left an empty draft behind on every
+  # abandoned click. The case is still pre-selected, just not persisted.
+  it "page load creates nothing and pre-selects the case" do
+    subject
+
+    expect(page).to have_content("Record new case contact")
+    # The case selection is server-rendered into the multiselect's values; TomSelect builds the
+    # native select's options client-side, so without JS that select is empty.
+    expect(page).to have_css(%([data-multiple-select-selected-items-value="[#{casa_case.id}]"]), visible: :all)
+    expect(CaseContact.count).to eq(0)
+  end
+
+  it "saves entered details and updates status to 'active'", :js do
+    subject
+
+    expect(page).to have_text "Record new case contact"
+
+    complete_details_page(
+      case_numbers: [case_number], contact_types: %w[School], contact_made: true,
+      medium: "In person", occurred_on: Time.zone.yesterday, hours: 1, minutes: 45
+    )
+    click_on "Submit"
+    expect(page).to have_text "Case contact successfully created."
+
+    case_contact = CaseContact.last # created by the submit, not by the page load
+    aggregate_failures do
+      expect(case_contact.status).to eq "active"
+      # entered details
+      expect(case_contact.draft_case_ids).to eq [casa_case.id]
+      expect(case_contact.occurred_at).to eq Time.zone.yesterday
+      expect(case_contact.contact_types.map(&:name)).to contain_exactly("School")
+      expect(case_contact.medium_type).to eq "in-person"
+      expect(case_contact.contact_made).to be true
+      expect(case_contact.duration_minutes).to eq 105
+      # skipped fields
+      expect(case_contact.want_driving_reimbursement).to be false
+      expect(case_contact.miles_driven).to be_zero
+      expect(case_contact.volunteer_address).to be_empty
+      expect(case_contact.notes).to be_nil
+      # associations
+      expect(case_contact.casa_case).to eq casa_case
+      expect(case_contact.creator).to eq volunteer
+      # other attributes
+      expect(case_contact.reimbursement_complete).to be false
+      expect(case_contact.status).to eq "active"
+      expect(case_contact.metadata).to be_present
+    end
+  end
+
+  describe "discarding a draft" do
+    let(:draft) do
+      create(:case_contact, :started_status, creator: volunteer, casa_case: nil,
+        draft_case_ids: [casa_case.id], notes: "half a thought")
+    end
+
+    # Assert the server-rendered `hidden`, not visibility: this is a rack_test example and rack_test
+    # ignores CSS, so it "sees" the hidden block. The :js example below covers the visible behaviour.
+    it "is not offered on a brand-new form, which has nothing to discard" do
+      subject
+
+      expect(page.find("#discard-draft", visible: :all)[:class]).to include("hidden")
+      expect(CaseContact.count).to eq(0)
+    end
+
+    # The control is server-rendered on `persisted?` and the autosave that creates the draft never
+    # re-renders the page, so it used to stay hidden until a reload -- i.e. it looked like it never
+    # worked. It now ships hidden and case_contact_draft.js reveals it (and fills in its action).
+    it "appears as soon as autosave creates the draft, with no reload", :js do
+      visit casa_case_path(casa_case)
+      click_on "New case contact"
+      expect(page).to have_no_button("Discard draft")
+
+      fill_in "case_contact_notes", with: "a partial thought"
+      expect(page).to have_text("Saved!")
+
+      expect(page).to have_button("Discard draft")
+
+      # And the revealed control is wired to the record that was just created.
+      draft = CaseContact.last
+      click_on "Discard draft"
+      within("dialog") { click_button "Discard draft" }
+
+      expect(page).to have_text("Draft discarded.")
+      expect(CaseContact.with_deleted.where(id: draft.id)).to be_empty
+      expect(page).to have_current_path(casa_case_path(casa_case))
+    end
+
+    it "is not offered for an active contact, which is a real record" do
+      contact = create(:case_contact, :active, casa_case: casa_case, creator: volunteer)
+
+      visit edit_case_contact_path(contact)
+
+      expect(page).to have_text("Editing existing case contact")
+      expect(page).to have_no_button("Discard draft")
+    end
+
+    it "is offered once a draft exists" do
+      visit case_contact_form_path(:details, case_contact_id: draft.id)
+
+      expect(page).to have_button("Discard draft")
+    end
+
+    it "confirms first, and keeps the draft when cancelled", :js do
+      visit case_contact_form_path(:details, case_contact_id: draft.id)
+
+      click_on "Discard draft"
+      expect(page).to have_text("Discard this draft?")
+      click_button "Cancel"
+
+      expect(CaseContact.with_deleted).to exist(draft.id)
+    end
+
+    # Hard delete: a soft-deleted draft keeps its row and resurfaces to admins as "[DELETE]".
+    it "deletes the draft and its autosaved children, then leaves the form", :js do
+      answer_topic = create(:contact_topic, casa_org: casa_org, question: "What was discussed?")
+      create(:contact_topic_answer, case_contact: draft, contact_topic: answer_topic, value: "an answer")
+      create(:additional_expense, case_contact: draft)
+
+      visit case_contact_form_path(:details, case_contact_id: draft.id)
+      click_on "Discard draft"
+      within("dialog") { click_button "Discard draft" }
+
+      expect(page).to have_text("Draft discarded.")
+      expect(CaseContact.with_deleted.where(id: draft.id)).to be_empty
+      expect(ContactTopicAnswer.with_deleted.where(case_contact_id: draft.id)).to be_empty
+      expect(AdditionalExpense.where(case_contact_id: draft.id)).to be_empty
+      expect(page).to have_current_path(case_contacts_path)
+    end
+  end
+
+  # The form was a dead end: Submit and Submit & add another were the only ways off it. Back uses the
+  # #leave action, so it returns where a successful Submit would -- see design.md "Back navigation on
+  # sub-pages", which calls this out as a recurring gap.
+  describe "the relevant-cases dropdown" do
+    # The case options used to carry `group: casa_org_id`, which the multiselect rendered as a header
+    # once it started drawing optgroups: a stray unclickable number sitting above the cases.
+    it "lists the cases with no group header", :js do
+      subject
+      find("#draft-case-id-selector .ts-control").click
+
+      expect(page).to have_css("#draft-case-id-selector .ts-dropdown .option", text: case_number)
+      expect(page).to have_no_css("#draft-case-id-selector .ts-dropdown .optgroup-header")
+    end
+  end
+
+  describe "leaving the form" do
+    it "offers Back, which returns to the page the form was opened from" do
+      visit casa_case_path(casa_case)
+      click_on "New case contact"
+      expect(page).to have_text("Record new case contact")
+
+      click_on "Back"
+
+      expect(page).to have_current_path(casa_case_path(casa_case))
+    end
+
+    it "falls back to the case-contacts list" do
+      visit case_contacts_path
+      click_on "New case contact"
+      expect(page).to have_text("Record new case contact")
+
+      click_on "Back"
+
+      expect(page).to have_current_path(case_contacts_path)
+    end
+
+    # Not "Cancel": the form autosaves, so on an existing contact the changes are already saved.
+    # The way out of the form is Back. Not asserted by hunting for the absence of "Cancel" any more:
+    # the discard confirm now lives in the actions row and its dialog legitimately has a Cancel, and
+    # rack_test cannot tell a closed dialog's contents from visible ones. Assert the actions the row
+    # actually offers instead.
+    it "offers Back as the way out, and no Cancel among the form's own actions" do
+      subject
+
+      expect(page).to have_link("Back")
+      within("#contact-form-action-buttons") do
+        expect(page).to have_button("Submit")
+        expect(page).to have_button("Submit & add another")
+      end
+      expect(page).to have_no_css("#contact-form-action-buttons > button[type=button]", text: "Cancel")
+    end
+  end
+
+  it "'Submit & add another' saves, reopens a fresh form for the same case, and links to the list", :js do
+    subject
+    complete_details_page(case_numbers: [case_number], contact_types: %w[School])
+
+    click_on "Submit & add another"
+
+    expect(page).to have_text "Case contact successfully created."
+    expect(page).to have_link "View case contacts", href: case_contacts_path
+    expect(page).to have_current_path(%r{/case_contacts/new}) # reopened a fresh, unsaved form
+    expect(CaseContact.active.count).to eq 1
+    expect(CaseContact.active.last.metadata["create_another"]).to be true
+  end
+
+  context "with invalid inputs" do
+    it "re-renders the form with errors, preserving all previously entered selections" do
+      subject
+      complete_details_page(
+        case_numbers: [], contact_types: %w[School], contact_made: true, medium: nil,
+        hours: 1, minutes: 45
+      )
+
+      click_on "Submit"
+
+      expect(page).to have_text("Medium type can't be blank")
+      expect(page).to have_field("case_contact_duration_hours", with: 1)
+      expect(page).to have_field("case_contact_duration_minutes", with: 45)
+      expect(page).to have_field("case_contact_contact_made", with: "1")
+      expect(page).to have_field(class: "contact-form-type-checkbox", with: school_contact_type.id, checked: true)
+
+      # The whole point of persisting on save rather than on open: an invalid first submit leaves no
+      # draft behind at all.
+      expect(CaseContact.count).to eq(0)
+    end
+  end
+
+  describe "contact types" do
+    it "requires a contact type", :js do
+      contact_types = [school_contact_type]
+      subject
+
+      fill_in_contact_details(contact_types: nil)
+
+      click_on "Submit"
+
+      expect(page).to have_text("Contact type must be selected")
+      expect(CaseContact.active.count).to eq(0)
+
+      check contact_types.first.name
+
+      click_on "Submit"
+      expect(page).to have_text("Case contact successfully created.")
+
+      expect(CaseContact.active.count).to eq(1)
+    end
+
+    it "does not display empty contact groups or hidden contact types" do
+      create(:contact_type, name: "Shown Checkbox", contact_type_group:)
+      build(:contact_type_group, name: "Empty Group", casa_org:)
+      grp_with_hidden = build(:contact_type_group, name: "OnlyHiddenTypes", casa_org:)
+      build(:contact_type, name: "Hidden", active: false, contact_type_group: grp_with_hidden)
+
+      subject
+
+      expect(page).to have_text(contact_type_group.name)
+      expect(page).to have_no_text("OnlyHiddenTypes")
+      expect(page).to have_no_text("Empty Group")
+
+      expect(page).to have_field(class: "contact-form-type-checkbox", count: 2)
+      expect(page).to have_field("School", class: "contact-form-type-checkbox")
+      expect(page).to have_field("Shown Checkbox", class: "contact-form-type-checkbox")
+      expect(page).to have_no_text("Empty")
+      expect(page).to have_no_text("Hidden")
+    end
+
+    context "when the case has case contact types assigned" do
+      let!(:casa_case) { create(:casa_case, :with_casa_case_contact_types, :with_one_case_assignment, casa_org:) }
+      let(:volunteer) { casa_case.volunteers.first }
+      let(:casa_case_contact_types) { casa_case.contact_types }
+
+      it "shows only the casa case's contact types" do
+        therapist_contact_type = create :contact_type, contact_type_group:, name: "Therapist"
+
+        subject
+
+        expect(page).to have_field(class: "contact-form-type-checkbox", with: casa_case_contact_types.first.id)
+        expect(page).to have_field(class: "contact-form-type-checkbox", with: casa_case_contact_types.last.id)
+        expect(page).to have_field(class: "contact-form-type-checkbox", count: casa_case_contact_types.size) # (no others)
+        expect(casa_org.contact_types).to contain_exactly(school_contact_type, therapist_contact_type, *casa_case_contact_types)
+        expect(casa_case_contact_types).not_to include([school_contact_type, therapist_contact_type])
+      end
+    end
+  end
+
+  describe "notes/contact topic answsers section" do
+    let(:contact_topics) do
+      [
+        create(:contact_topic, casa_org:, question: "Active Topic", active: true, soft_delete: false),
+        create(:contact_topic, casa_org:, question: "Inactive Not Soft Deleted", active: false, soft_delete: false),
+        create(:contact_topic, casa_org:, question: "Active Soft Deleted", active: true, soft_delete: true),
+        create(:contact_topic, casa_org:, question: "Inactive Soft Deleted", active: false, soft_delete: true)
+      ]
+    end
+    let(:notes_section_selector) { "#contact-form-notes" }
+    let(:autosave_alert_div) { "#contact-form-notes" }
+    let(:autosave_alert_css) { 'small[role="alert"]' }
+
+    it "does not show topic questions that are inactive or soft deleted" do
+      contact_topics
+      subject
+
+      within notes_section_selector do
+        expect(page).to have_field("Active Topic", type: :checkbox)
+        expect(page).to have_no_text("Inactive Not Soft Deleted")
+        expect(page).to have_no_text("Active Soft Deleted")
+        expect(page).to have_no_text("Inactive Soft Deleted")
+      end
+    end
+
+    it "autosaves notes & answers", :js do
+      contact_topics
+      subject
+
+      complete_details_page(
+        case_numbers: [case_number], contact_types: %w[School], contact_made: true,
+        medium: "In person", occurred_on: Date.new(2020, 4, 4), hours: 1, minutes: 45
+      )
+
+      answer_topic "Active Topic", "Hello world"
+
+      within autosave_alert_div do
+        find(autosave_alert_css, text: "Saved!")
+      end
+
+      expect(page.find(".contact-topic-answer-input")&.value).to eq("Hello world")
+    end
+
+    context "when org has no contact topics" do
+      it "allows entering contact notes", :js do
+        subject
+
+        fill_in_contact_details contact_types: %w[School]
+
+        fill_in "Additional notes", with: "This is the note"
+
+        click_on "Submit"
+
+        expect(page).to have_text("Case contact successfully created.")
+
+        expect(casa_org.contact_topics.size).to eq 0
+        expect(CaseContact.active.count).to eq 1
+        case_contact = CaseContact.active.last
+        expect(case_contact.contact_topic_answers).to be_empty
+        expect(case_contact.notes).to eq "This is the note"
+      end
+
+      it "guides volunteer to contact admin" do
+        subject
+
+        expect(page).to have_text("Your organization has not set any Court Report Topics yet. Contact your admin to learn more.")
+        expect(CaseContact.active.count).to eq(0)
+      end
+
+      context "with admin user" do
+        let(:casa_admin) { create(:casa_admin, casa_org: casa_org) }
+        let(:user) { casa_admin }
+
+        it "shows the admin the contact topics link" do
+          subject
+
+          expect(page).to have_link("Manage case contact topics")
+          expect(CaseContact.active.count).to eq(0)
+        end
+      end
+
+      context "with supervisor user" do
+        let(:supervisor) { create :supervisor, casa_org: }
+        let(:user) { supervisor }
+
+        it "guides supervisor to contact admin" do
+          subject
+
+          expect(page).to have_text("Your organization has not set any Court Report Topics yet. Contact your admin to learn more.")
+          expect(CaseContact.active.count).to eq(0)
+        end
+      end
+    end
+  end
+
+  describe "reimbursement section" do
+    let(:casa_org) { build(:casa_org, :all_reimbursements_enabled) }
+
+    let(:reimbursement_section_id) { "#contact-form-reimbursement" }
+    let(:reimbursement_checkbox) { "case_contact_want_driving_reimbursement" }
+    let(:miles_driven_input) { "case_contact_miles_driven" }
+    let(:volunteer_address_input) { "case_contact_volunteer_address_line_1" }
+    let(:add_expense_button_text) { "Add another expense" }
+
+    before do
+      allow(Flipper).to receive(:enabled?).with(:show_additional_expenses).and_return(true)
+      allow(Flipper).to receive(:enabled?).with(:reimbursement_warning, casa_org).and_call_original
+    end
+
+    it "is not shown until 'Request travel or other reimbursement' is checked", :js do
+      subject
+
+      expect(page).to have_no_field(miles_driven_input)
+      expect(page).to have_no_field(volunteer_address_input)
+      expect(page).to have_no_button(add_expense_button_text)
+
+      check reimbursement_checkbox
+
+      expect(page).to have_field(miles_driven_input)
+      expect(page).to have_field(volunteer_address_input)
+      expect(page).to have_button(add_expense_button_text)
+    end
+
+    it "clears mileage info if reimbursement unchecked", :js do
+      subject
+      fill_in_contact_details contact_types: %w[School]
+
+      check reimbursement_checkbox
+      fill_in miles_driven_input, with: 50
+      fill_in volunteer_address_input, with: "123 Example St"
+      uncheck reimbursement_checkbox
+
+      click_on "Submit"
+
+      expect(page).to have_text("Case contact successfully created.")
+
+      expect(CaseContact.active.count).to eq(1)
+      case_contact = CaseContact.active.last
+      expect(case_contact.want_driving_reimbursement).to be false
+      expect(case_contact.miles_driven).to be_zero
+    end
+
+    it "saves mileage and address information", :js do
+      subject
+      fill_in_contact_details contact_types: %w[School]
+
+      check reimbursement_checkbox
+
+      fill_in miles_driven_input, with: 50
+      fill_in volunteer_address_input, with: "123 Example St"
+
+      click_on "Submit"
+
+      expect(page).to have_text("Case contact successfully created.")
+
+      expect(CaseContact.active.count).to eq(1)
+      case_contact = CaseContact.active.last
+      expect(case_contact.want_driving_reimbursement).to be true
+      expect(case_contact.volunteer_address).to eq "123 Example St"
+      expect(case_contact.miles_driven).to eq 50
+    end
+
+    it "does not accept decimal mileage" do
+      subject
+
+      check reimbursement_checkbox
+
+      fill_in miles_driven_input, with: 50.5
+      fill_in volunteer_address_input, with: "123 Example St"
+
+      click_on "Submit"
+
+      expect(page).to have_text("No changes have been saved")
+
+      expect(CaseContact.active.count).to eq(0)
+    end
+
+    it "requires inputs if checkbox checked" do
+      subject
+      complete_details_page
+
+      check reimbursement_checkbox
+
+      click_on "Submit"
+
+      expect(page).to have_text("Mailing address must be entered for reimbursement")
+
+      expect(CaseContact.active.count).to eq(0)
+    end
+
+    context "when volunteer case assignment reimbursement is false" do
+      let(:volunteer) { build :volunteer, :with_disallow_reimbursement, casa_org: }
+
+      it "does not show reimbursement section" do
+        subject
+
+        expect(page).to have_no_button(add_expense_button_text)
+        expect(page).to have_no_field(miles_driven_input)
+        expect(page).to have_no_field(volunteer_address_input)
+        expect(page).to have_no_field(reimbursement_checkbox)
+        expect(page).to have_no_selector(reimbursement_section_id)
+        expect(page).to have_no_text("reimbursement")
+      end
+    end
+
+    context "when casa org driving reimbursement false, additional expenses true" do
+      before { casa_org.update! show_driving_reimbursement: false }
+
+      it "does not render the reimbursement section" do
+        subject
+
+        expect(page).to have_no_field(reimbursement_checkbox, visible: :all)
+        expect(page).to have_no_field(miles_driven_input, visible: :all)
+        expect(page).to have_no_field(volunteer_address_input, visible: :all)
+        expect(page).to have_no_button(add_expense_button_text, visible: :all)
+        expect(page).to have_no_field(class: "expense-amount-input")
+        expect(page).to have_no_field(class: "expense-describe-input")
+        expect(page).to have_no_text("reimbursement")
+      end
+    end
+
+    context "when casa org additional expenses false" do
+      before { casa_org.update! additional_expenses_enabled: false }
+
+      it "enables mileage reimbursement but does shows additional expenses", :js do
+        subject
+
+        complete_details_page(case_numbers: [case_number], contact_types: %w[School])
+
+        check reimbursement_checkbox
+
+        expect(page).to have_field(miles_driven_input)
+        expect(page).to have_field(volunteer_address_input)
+
+        expect(page).to have_no_button(add_expense_button_text)
+        expect(page).to have_no_field(class: "expense-amount-input", visible: :all)
+        expect(page).to have_no_field(class: "expense-describe-input", visible: :all)
+      end
+    end
+
+    context "when casa org does not allow mileage or expense reimbursement" do
+      let(:casa_org) { build :casa_org, show_driving_reimbursement: false, additional_expenses_enabled: false }
+
+      it "does not show reimbursement section" do
+        subject
+
+        expect(page).to have_no_button(add_expense_button_text)
+        expect(page).to have_no_field(miles_driven_input)
+        expect(page).to have_no_field(volunteer_address_input)
+        expect(page).to have_no_field(reimbursement_checkbox)
+        expect(page).to have_no_selector(reimbursement_section_id)
+        expect(page).to have_no_text("reimbursement")
+      end
+    end
+  end
+
+  context "when 'Create another' is checked" do
+    it "redirects to the new CaseContact form with the same case selected", :js do
+      subject
+
+      complete_details_page(
+        case_numbers: [case_number], contact_types: %w[School], contact_made: true,
+        medium: "In person", occurred_on: Date.today, hours: 1, minutes: 45
+      )
+
+      click_on "Submit & add another"
+
+      expect(page).to have_text "Case contact successfully created."
+      expect(page).to have_text "Record new case contact"
+      expect(page).to have_text case_number
+
+      expect(CaseContact.active.count).to eq(1)
+      # The reopened form is unsaved, so no second draft exists yet.
+      expect(CaseContact.started.count).to eq(0)
+
+      submitted_case_contact = CaseContact.active.last
+      expect(submitted_case_contact.reload.metadata["create_another"]).to be true
+
+      # The reopened form carries the case forward but none of the last contact's other answers.
+      expect(page).to have_select("case_contact_draft_case_ids", selected: [case_number])
+      expect(page).to have_no_field("case_contact_medium_type", checked: true)
+      expect(page).to have_field("case_contact_notes", with: "")
+    end
+
+    it "does not reset referring location", :js do
+      visit casa_case_path casa_case
+      # referrer will be set by CaseContactsController#new to casa_case_path(casa_case)
+      click_on "New case contact"
+      fill_in_contact_details contact_types: %w[School]
+
+      # goes through CaseContactsController#new, but should not set a referring location
+      click_on "Submit & add another"
+
+      fill_in_contact_details contact_types: %w[School]
+
+      click_on "Submit"
+      # update should redirect to the original referrer, casa_case_path(casa_case)
+      expect(page).to have_text "Case details"
+      expect(page).to have_text "Case #{case_number}"
+    end
+
+    context "when multiple cases selected" do
+      let(:volunteer) { create(:volunteer, :with_casa_cases, casa_org:) }
+      let(:casa_case) { volunteer.casa_cases.first }
+      let(:casa_case_two) { volunteer.casa_cases.second }
+      let(:case_number_two) { casa_case_two.case_number }
+      let!(:draft_case_ids) { [casa_case.id, casa_case_two.id] }
+
+      it "redirects to the new CaseContact form with the same cases selected", :js do
+        expect {
+          visit new_case_contact_path(casa_case, {draft_case_ids:})
+          expect(page).to have_content("Record new case contact")
+        }.not_to change(CaseContact, :count)
+
+        expect(page).to have_select("case_contact_draft_case_ids", selected: [case_number, case_number_two])
+        complete_details_page(case_numbers: [])
+        expect(page).to have_select("case_contact_draft_case_ids", selected: [case_number, case_number_two])
+
+        expect {
+          click_on "Submit & add another"
+          expect(page).to have_text "Case contacts successfully created."
+        }.to change(CaseContact.active, :count).by(2)
+
+        expect(page).to have_text "Record new case contact"
+        # Both submitted contacts went active and the reopened form persisted nothing.
+        expect(CaseContact.not_active).to be_empty
+        expect(page).to have_text case_number
+        expect(page).to have_text case_number_two
+        expect(page).to have_select("case_contact_draft_case_ids", selected: [case_number, case_number_two])
+      end
+    end
+  end
+
+  context "when volunteer has multiple cases" do
+    let(:volunteer) { create(:volunteer, :with_casa_cases, casa_org:) }
+    let(:first_case) { volunteer.casa_cases.first }
+    let(:second_case) { volunteer.casa_cases.second }
+
+    describe "case default selection" do
+      it "selects no cases", :js do
+        subject
+
+        expect(page).to have_no_text(first_case.case_number)
+        expect(page).to have_no_text(second_case.case_number)
+      end
+
+      context "when there are params defined" do
+        it "select the cases defined in the params", :js do
+          visit new_case_contact_path(case_contact: {casa_case_id: first_case.id})
+
+          expect(page).to have_text(first_case.case_number)
+          expect(page).to have_no_text(second_case.case_number)
+        end
+      end
+    end
+  end
+
+  context "when volunteer has one case" do
+    let(:first_case) { volunteer.casa_cases.first }
+
+    # Asserts the sole case is pre-selected in the relevant-cases control (TomSelect). The
+    # legacy sidebar listed each case number, so the old non-JS text match happened to pass;
+    # the casa_app sidebar has one "My Cases" link, so we assert the actual widget selection
+    # like the multi-case sibling below. The server-side default is covered by the first spec.
+    it "selects the only case", :js do
+      subject
+
+      expect(page).to have_select("case_contact_draft_case_ids", selected: [first_case.case_number])
+      expect(volunteer.casa_cases.size).to eq 1
+    end
+  end
+
+  context "with admin user" do
+    it "can create CaseContact", :js do
+      subject
+
+      complete_details_page(
+        case_numbers: [], contact_types: %w[School], contact_made: true,
+        medium: "Video", occurred_on: Date.new(2020, 4, 5), hours: 1, minutes: 45
+      )
+
+      click_on "Submit"
+
+      expect(page).to have_text "Case contact successfully created."
+
+      expect(CaseContact.active.count).to eq(1)
+      contact = CaseContact.active.last
+      expect(contact.casa_case_id).to eq casa_case.id
+      expect(contact.contact_types.map(&:name)).to include("School")
+      expect(contact.duration_minutes).to eq 105
+    end
+  end
+end

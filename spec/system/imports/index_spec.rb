@@ -1,0 +1,178 @@
+require "rails_helper"
+
+RSpec.describe "imports/index", type: :system do
+  context "as a volunteer" do
+    it "redirects the user with an error message" do
+      volunteer = create(:volunteer)
+
+      sign_in volunteer
+      visit imports_path
+
+      expect(page).to have_selector(".alert", text: "Sorry, you are not authorized to perform this action.")
+    end
+  end
+
+  context "as an admin" do
+    context "import volunteer csv with phone numbers", :js do
+      it "shows sms opt in modal" do
+        import_file_path = file_fixture "volunteers.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path(:volunteer)
+
+        expect(page).to have_content("Import volunteers")
+        expect(page).to have_button("volunteer-import-button", disabled: false)
+
+        attach_file "volunteer-file", import_file_path
+        click_button "volunteer-import-button"
+
+        expect(page).to have_text("SMS opt in")
+        expect(page).to have_button("sms-opt-in-continue-button", disabled: false)
+
+        check "sms-opt-in-checkbox"
+        click_button "sms-opt-in-continue-button"
+
+        expect(page).to have_text("You successfully imported")
+      end
+    end
+
+    context "import volunteer csv without phone numbers", :js do
+      it "shows successful import" do
+        import_file_path = file_fixture "volunteers_without_phone_numbers.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path(:volunteer)
+
+        expect(page).to have_content("Import volunteers")
+
+        attach_file "volunteer-file", import_file_path
+        click_button "volunteer-import-button"
+
+        expect(page).to have_text("You successfully imported")
+      end
+    end
+
+    context "import volunteer csv without display names", :js do
+      it "shows failed import modal" do
+        import_file_path = file_fixture "volunteers_without_display_names.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path(:volunteer)
+
+        expect(page).to have_content("Import volunteers")
+
+        attach_file "volunteer-file", import_file_path
+        click_button "volunteer-import-button"
+
+        check "sms-opt-in-checkbox"
+        click_button "sms-opt-in-continue-button"
+
+        expect(page).to have_text("CSV import error")
+      end
+    end
+
+    context "import supervisors csv with phone numbers", :js do
+      it "shows sms opt in modal" do
+        import_file_path = file_fixture "supervisors.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path
+        click_on "supervisor-tab"
+
+        expect(page).to have_content("Import supervisors")
+        expect(page).to have_button("supervisor-import-button", disabled: false)
+
+        attach_file "supervisor-file", import_file_path
+        click_button "supervisor-import-button"
+
+        expect(page).to have_text("SMS opt in")
+        expect(page).to have_button("sms-opt-in-continue-button", disabled: false)
+
+        find("#sms-opt-in-checkbox", visible: true).check
+        click_button "sms-opt-in-continue-button"
+
+        expect(page).to have_text("You successfully imported")
+      end
+    end
+
+    context "import supervisors csv without phone numbers", :js do
+      it "shows successful import" do
+        import_file_path = file_fixture "supervisors_without_phone_numbers.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path
+
+        click_on "Import supervisors"
+
+        expect(page).to have_content("Import supervisors")
+
+        attach_file "supervisor-file", import_file_path
+        click_button "supervisor-import-button"
+
+        expect(page).to have_text("You successfully imported")
+      end
+    end
+
+    context "import supervisors csv without display names", :js do
+      it "shows failed import modal" do
+        import_file_path = file_fixture "supervisors_without_display_names.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path
+
+        click_on "Import supervisors"
+
+        expect(page).to have_content("Import supervisors")
+
+        attach_file "supervisor-file", import_file_path
+        click_button "supervisor-import-button"
+
+        check "sms-opt-in-checkbox"
+        click_button "sms-opt-in-continue-button"
+
+        expect(page).to have_text("CSV import error")
+      end
+    end
+
+    context "with no file chosen", :js do
+      it "stays on the page and shows a validation error (button not disabled)" do
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path(:volunteer)
+
+        expect(page).to have_button("volunteer-import-button", disabled: false)
+        click_button "volunteer-import-button"
+
+        expect(page).to have_text("Please choose a CSV file to import")
+        expect(page).to have_content("Import volunteers")
+        expect(page).to have_button("volunteer-import-button", disabled: false)
+      end
+    end
+
+    context "with SMS opt-in not confirmed", :js do
+      it "shows a validation error when Continue is clicked without checking the box" do
+        import_file_path = file_fixture "volunteers.csv"
+        admin = create(:casa_admin)
+
+        sign_in admin
+        visit imports_path(:volunteer)
+
+        attach_file "volunteer-file", import_file_path
+        click_button "volunteer-import-button"
+
+        expect(page).to have_text("SMS opt in")
+        expect(page).to have_button("sms-opt-in-continue-button", disabled: false)
+        click_button "sms-opt-in-continue-button"
+
+        expect(page).to have_text("Please confirm the numbers have opted in")
+      end
+    end
+  end
+end

@@ -1,7 +1,8 @@
 require "csv"
 
 class CaseContactReportsController < ApplicationController
-  before_action :authenticate_user!
+  after_action :verify_authorized
+  skip_after_action :verify_policy_scoped # TODO: index should call policy_scope; remove this skip once it does
 
   def index
     authorize :application, :see_reports_page?
@@ -18,12 +19,36 @@ class CaseContactReportsController < ApplicationController
   private
 
   def report_params
-    params.permit(
-      :start_date, :end_date, :contact_made, :has_transitioned, :want_driving_reimbursement,
-      {contact_type_ids: []},
-      {contact_type_group_ids: []},
-      {creator_ids: []},
-      {supervisor_ids: []}
-    )
+    parameters = params.require(:report).permit(
+      :start_date,
+      :end_date,
+      :contact_made,
+      :has_transitioned,
+      :want_driving_reimbursement,
+      :other_expense_amount,
+      :other_expenses_describe,
+      contact_type_ids: [],
+      contact_type_group_ids: [],
+      creator_ids: [],
+      supervisor_ids: [],
+      casa_case_ids: [],
+      filtered_csv_cols: {}
+    ).merge(casa_org_id: current_organization.id)
+    convert_radio_options_to_boolean(parameters)
+    parameters
+  end
+
+  def convert_radio_options_to_boolean(parameters)
+    parameters[:contact_made] = string_to_boolean(parameters[:contact_made])
+    parameters[:has_transitioned] = string_to_boolean(parameters[:has_transitioned])
+    parameters[:want_driving_reimbursement] = string_to_boolean(parameters[:want_driving_reimbursement])
+  end
+
+  def string_to_boolean(value)
+    if value == "true"
+      true
+    else
+      ((value == "false") ? false : "")
+    end
   end
 end

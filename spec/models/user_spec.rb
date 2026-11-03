@@ -3,97 +3,212 @@ require "rails_helper"
 RSpec.describe User, type: :model do
   it { is_expected.to belong_to(:casa_org) }
 
-  it { is_expected.to have_many(:case_assignments) }
+  it { is_expected.to have_many(:case_assignments).with_foreign_key(:volunteer_id).dependent(:restrict_with_error) }
   it { is_expected.to have_many(:casa_cases).through(:case_assignments) }
-  it { is_expected.to have_many(:case_contacts) }
 
-  it { is_expected.to have_many(:supervisor_volunteers) }
-  it { is_expected.to have_many(:volunteers).through(:supervisor_volunteers) }
+  describe "destroying a volunteer with case_assignments" do
+    # The deactivate flow (Volunteer#deactivate) is the supported way to retire
+    # a volunteer: it sets `active: false` on the user and on every
+    # case_assignment, preserving rows for audit. Hard-deleting a volunteer
+    # that still has assignments would silently discard that history, so the
+    # association is :restrict_with_error. Issue #6911.
+    let(:volunteer) { create(:volunteer) }
+
+    let!(:assignment) do
+      create(:case_assignment, casa_case: create(:casa_case, casa_org: volunteer.casa_org), volunteer: volunteer)
+    end
+
+    before do
+      ApiCredential.where(user: volunteer).delete_all
+      volunteer.case_assignments.reset
+    end
+
+    it "refuses to destroy the volunteer" do
+      destroyed = nil
+      expect { destroyed = volunteer.destroy }.not_to change(CaseAssignment, :count)
+      expect(destroyed).to eq(false)
+      expect(volunteer.persisted?).to eq(true)
+    end
+
+    it "leaves the volunteer's case_assignments intact" do
+      volunteer.destroy
+      expect(CaseAssignment.exists?(assignment.id)).to eq(true)
+    end
+  end
+  it { is_expected.to have_many(:case_contacts) }
+  it { is_expected.to have_many(:sent_emails) }
+  it { is_expected.to have_many(:user_languages) }
+  it { is_expected.to have_many(:languages).through(:user_languages) }
+
+  it { is_expected.to have_many(:followups).with_foreign_key(:creator_id) }
 
   it { is_expected.to have_one(:supervisor_volunteer) }
   it { is_expected.to have_one(:supervisor).through(:supervisor_volunteer) }
 
-  it "requires display name" do
-    user = build(:user, display_name: "")
-    expect(user.valid?).to be false
+  it { is_expected.to have_many(:notes) }
+
+  describe "model validations" do
+    it "requires display name" do
+      user = build(:user, display_name: "")
+      expect(user.valid?).to be false
+    end
+
+    it "requires email" do
+      user = build(:user, email: "")
+      expect(user.valid?).to be false
+    end
+
+    it "requires 12 digit phone numbers" do
+      user = build(:user, phone_number: "+1416321")
+      expect(user.valid?).to be false
+    end
+
+    it "requires phone number to only contain numbers" do
+      user = build(:user, phone_number: "+1416eee4325")
+      expect(user.valid?).to be false
+    end
+
+    it "requires phone number with US area code" do
+      user = build(:user, phone_number: "+76758890432")
+      expect(user.valid?).to be false
+    end
+
+    it "requires date of birth to be in the past" do
+      user = build(:user, date_of_birth: 10.days.from_now)
+      expect(user.valid?).to be false
+      expect(user.errors[:base]).to eq([" Date of birth must be in the past."])
+    end
+
+    it "requires date of birth to be no earlier than 1/1/1920" do
+      user = build(:user, date_of_birth: "1919-12-31".to_date)
+      expect(user.valid?).to be false
+      expect(user.errors[:base]).to eq([" Date of birth must be on or after 1/1/1920."])
+    end
+
+    it "shows custom email uniqueness error message" do
+      create(:user, email: "volunteer1@example.com")
+      user = build(:user, email: "volunteer1@example.com")
+      expect(user.valid?).to be false
+      expect(user.errors[:base]).to eq([I18n.t("activerecord.errors.messages.email_uniqueness")])
+    end
+
+    it "has an empty old_emails array when initialized" do
+      user = build(:user)
+      expect(user.old_emails).to eq([])
+    end
   end
-  it "returns all case_contacts associated with this user and the casa case id supplied" do
-    volunteer = create(:volunteer, :with_casa_cases)
 
-    case_of_interest = volunteer.casa_cases.first
-    create(:case_contact, creator: volunteer, casa_case: case_of_interest)
-    create(:case_contact, creator: volunteer, casa_case: volunteer.casa_cases.second)
+  describe "#case_contacts_for" do
+    let(:volunteer) { create(:volunteer, :with_casa_cases) }
+    let(:case_of_interest) { volunteer.casa_cases.first }
+    let!(:contact_a) { create(:case_contact, creator: volunteer, casa_case: case_of_interest) }
+    let!(:contact_b) { create(:case_contact, creator: volunteer, casa_case: volunteer.casa_cases.second) }
 
-    sample_casa_case_id = case_of_interest.id
+    it "returns all case_contacts associated with this user and the casa case id supplied" do
+      sample_casa_case_id = case_of_interest.id
 
-    result = volunteer.case_contacts_for(sample_casa_case_id)
+      result = volunteer.case_contacts_for(sample_casa_case_id)
 
-    expect(result.length).to eq(1)
-  end
+      expect(result.length).to eq(1)
+    end
 
-  it "does not return case_contacts associated with another volunteer user" do
-    volunteer = create(:volunteer, :with_casa_cases)
-    other_volunteer = create(:volunteer, :with_casa_cases)
+    it "does not return case_contacts associated with another volunteer user" do
+      other_volunteer = build(:volunteer, :with_casa_cases, casa_org: volunteer.casa_org)
 
-    case_of_interest = volunteer.casa_cases.first
-    create(:case_contact, creator: volunteer, casa_case: case_of_interest)
-    create(:case_contact, creator: volunteer, casa_case: volunteer.casa_cases.second)
-    create(:case_assignment, casa_case: case_of_interest, volunteer: other_volunteer)
-    create(:case_contact, creator: other_volunteer, casa_case: case_of_interest)
-    create(:case_contact)
+      create(:case_assignment, casa_case: case_of_interest, volunteer: other_volunteer)
+      create(:case_contact, creator: other_volunteer, casa_case: case_of_interest)
+      build_stubbed(:case_contact)
 
-    sample_casa_case_id = case_of_interest.id
+      sample_casa_case_id = case_of_interest.id
 
-    result = volunteer.case_contacts_for(sample_casa_case_id)
-    expect(result.length).to eq(1)
-    result = other_volunteer.case_contacts_for(sample_casa_case_id)
-    expect(result.length).to eq(1)
+      result = volunteer.case_contacts_for(sample_casa_case_id)
+      expect(result.length).to eq(1)
+      result = other_volunteer.case_contacts_for(sample_casa_case_id)
+      expect(result.length).to eq(1)
+    end
+
+    it "does not return case_contacts neither unassigned cases or inactive cases" do
+      inactive_case_assignment = create(:case_assignment, casa_case: create(:casa_case, casa_org: volunteer.casa_org), active: false, volunteer: volunteer)
+      case_assignment_to_inactve_case = create(:case_assignment, casa_case: create(:casa_case, active: false, casa_org: volunteer.casa_org), volunteer: volunteer)
+
+      expect {
+        volunteer.case_contacts_for(inactive_case_assignment.casa_case.id)
+      }.to raise_error(ActiveRecord::RecordNotFound)
+
+      expect {
+        volunteer.case_contacts_for(case_assignment_to_inactve_case.casa_case.id)
+      }.to raise_error(ActiveRecord::RecordNotFound)
+    end
   end
 
   describe "supervisors" do
-    context "#volunteers_serving_transistion_aged_youth" do
+    describe "#volunteers_serving_transition_aged_youth" do
+      let(:casa_org) { build(:casa_org) }
+      let(:supervisor) { build(:supervisor, casa_org: casa_org) }
+
       it "returns the number of transition aged youth on a supervisor" do
-        assignment1 = create(:case_assignment, casa_case: create(:casa_case, transition_aged_youth: true))
-        assignment2 = create(:case_assignment, casa_case: create(:casa_case, transition_aged_youth: true))
-        assignment3 = create(:case_assignment, casa_case: create(:casa_case, transition_aged_youth: false))
-        supervisor = create(:supervisor)
-        create(:volunteer, case_assignments: [assignment1], supervisor: supervisor)
-        create(:volunteer, case_assignments: [assignment2], supervisor: supervisor)
-        create(:volunteer, case_assignments: [assignment3], supervisor: supervisor)
-        expect(supervisor.volunteers_serving_transistion_aged_youth).to eq(2)
+        casa_cases = [
+          build(:casa_case, casa_org: casa_org),
+          build(:casa_case, casa_org: casa_org),
+          create(:casa_case, :pre_transition, casa_org: casa_org)
+        ]
+
+        casa_cases.each do |casa_case|
+          volunteer = create(:volunteer, supervisor: supervisor, casa_org: casa_org)
+          volunteer.casa_cases << casa_case
+        end
+
+        expect(supervisor.volunteers_serving_transition_aged_youth).to eq(2)
+      end
+
+      it "ignores volunteers' inactive and unassgined cases" do
+        volunteer = create(:volunteer, supervisor: supervisor, casa_org: casa_org)
+        create(:case_assignment, casa_case: create(:casa_case, casa_org: casa_org, active: false), volunteer: volunteer)
+        create(:case_assignment, casa_case: create(:casa_case, casa_org: casa_org), active: false, volunteer: volunteer)
+
+        expect(supervisor.volunteers_serving_transition_aged_youth).to eq(0)
       end
     end
 
-    context "#no_contact_for_two_weeks" do
+    describe "#no_attempt_for_two_weeks" do
       let(:supervisor) { create(:supervisor) }
 
-      it "returns zero for a volunteer that has successfully made contact in at least one contact_case within the last 2 weeks" do
+      it "returns zero for a volunteer that has attempted contact in at least one contact_case within the last 2 weeks" do
         volunteer_1 = create(:volunteer, :with_casa_cases, supervisor: supervisor)
 
         case_of_interest_1 = volunteer_1.casa_cases.first
-        create(:case_contact, creator: volunteer_1, casa_case: case_of_interest_1, contact_made: false, occurred_at: 1.weeks.ago)
-        expect(supervisor.no_contact_for_two_weeks).to eq(1)
-        create(:case_contact, creator: volunteer_1, casa_case: case_of_interest_1, contact_made: true, occurred_at: 1.weeks.ago)
-        expect(supervisor.no_contact_for_two_weeks).to eq(0)
+        create(:case_contact, creator: volunteer_1, casa_case: case_of_interest_1, contact_made: true, created_at: 1.week.ago)
+        expect(supervisor.no_attempt_for_two_weeks).to eq(0)
+      end
+
+      it "returns one for a supervisor with two volunteers, only one of which has a contact newer than 2 weeks old" do
+        volunteer_1 = create(:volunteer, :with_casa_cases, supervisor: supervisor)
+        volunteer_2 = create(:volunteer, :with_casa_cases, supervisor: supervisor)
+
+        case_of_interest_1 = volunteer_1.casa_cases.first
+        case_of_interest_2 = volunteer_2.casa_cases.first
+        create(:case_contact, creator: volunteer_1, casa_case: case_of_interest_1, contact_made: true, created_at: 1.week.ago)
+        create(:case_contact, creator: volunteer_2, casa_case: case_of_interest_2, contact_made: true, created_at: 3.weeks.ago)
+        expect(supervisor.no_attempt_for_two_weeks).to eq(1)
       end
 
       it "returns one for a volunteer that has not made any contact_cases within the last 2 weeks" do
         create(:volunteer, :with_casa_cases, supervisor: supervisor)
-        expect(supervisor.no_contact_for_two_weeks).to eq(1)
+        expect(supervisor.no_attempt_for_two_weeks).to eq(1)
       end
 
       it "returns zero for a volunteer that is not assigned to any casa cases" do
         create(:volunteer, supervisor: supervisor)
-        expect(supervisor.no_contact_for_two_weeks).to eq(0)
+        expect(supervisor.no_attempt_for_two_weeks).to eq(0)
       end
 
-      it "returns one for a volunteer that has successfully made contact in at least one contact_case with occurred_at after 2 weeks" do
+      it "returns one for a volunteer who has attempted contact in at least one contact_case with created_at after 2 weeks" do
         volunteer_1 = create(:volunteer, :with_casa_cases, supervisor: supervisor)
 
         case_of_interest_1 = volunteer_1.casa_cases.first
 
-        create(:case_contact, creator: volunteer_1, casa_case: case_of_interest_1, contact_made: true, occurred_at: 3.weeks.ago)
-        expect(supervisor.no_contact_for_two_weeks).to eq(1)
+        create(:case_contact, creator: volunteer_1, casa_case: case_of_interest_1, contact_made: true, created_at: 3.weeks.ago)
+        expect(supervisor.no_attempt_for_two_weeks).to eq(1)
       end
 
       it "returns zero for a volunteer that has no active casa case assignments" do
@@ -103,82 +218,140 @@ RSpec.describe User, type: :model do
         case_of_interest_2 = volunteer_1.casa_cases.last
         case_assignment_1 = case_of_interest_1.case_assignments.find_by(volunteer: volunteer_1)
         case_assignment_2 = case_of_interest_2.case_assignments.find_by(volunteer: volunteer_1)
-        case_assignment_1.update!(is_active: false)
-        case_assignment_2.update!(is_active: false)
+        case_assignment_1.update!(active: false)
+        case_assignment_2.update!(active: false)
 
-        expect(supervisor.no_contact_for_two_weeks).to eq(0)
+        expect(supervisor.no_attempt_for_two_weeks).to eq(0)
       end
     end
   end
 
   describe "#active_for_authentication?" do
     it "is false when the user is inactive" do
-      user = create(:volunteer, :inactive)
+      user = build(:volunteer, :inactive)
       expect(user).not_to be_active_for_authentication
       expect(user.inactive_message).to eq(:inactive)
     end
 
     it "is true otherwise" do
-      user = create(:volunteer)
+      user = build(:volunteer)
       expect(user).to be_active_for_authentication
 
-      user = create(:supervisor)
+      user = build(:supervisor)
       expect(user).to be_active_for_authentication
     end
   end
 
-  describe "#serving_transition_aged_youth?" do
-    let(:case_assignment_with_a_transition_aged_youth) do
-      create(:case_assignment, casa_case: create(:casa_case, transition_aged_youth: true))
+  describe "#actively_assigned_and_active_cases" do
+    let(:user) { build(:volunteer) }
+    let!(:active_case_assignment_with_active_case) do
+      create(:case_assignment, casa_case: build(:casa_case, casa_org: user.casa_org), volunteer: user)
     end
-    let(:case_assignment_without_transition_aged_youth) do
-      create(:case_assignment, casa_case: create(:casa_case, transition_aged_youth: false))
+    let!(:active_case_assignment_with_inactive_case) do
+      create(:case_assignment, casa_case: build(:casa_case, casa_org: user.casa_org, active: false), volunteer: user)
+    end
+    let!(:inactive_case_assignment_with_active_case) do
+      create(:case_assignment, casa_case: build(:casa_case, casa_org: user.casa_org), active: false, volunteer: user)
+    end
+    let!(:inactive_case_assignment_with_inactive_case) do
+      create(:case_assignment, casa_case: build(:casa_case, casa_org: user.casa_org, active: false), active: false, volunteer: user)
+    end
+
+    it "only returns the user's active cases with active case assignments" do
+      expect(user.actively_assigned_and_active_cases).to contain_exactly(active_case_assignment_with_active_case.casa_case)
+    end
+  end
+
+  describe "#serving_transition_aged_youth?" do
+    let(:user) { build(:volunteer) }
+    let!(:case_assignment_without_transition_aged_youth) do
+      create(:case_assignment, casa_case: create(:casa_case, :pre_transition, casa_org: user.casa_org), volunteer: user)
     end
 
     context "when the user has a transition-aged-youth case" do
       it "is true" do
-        case_assignments = [
-          case_assignment_with_a_transition_aged_youth,
-          case_assignment_without_transition_aged_youth
-        ]
-        user = create(:volunteer, case_assignments: case_assignments)
-
+        create(:case_assignment, casa_case: create(:casa_case, casa_org: user.casa_org), volunteer: user)
         expect(user).to be_serving_transition_aged_youth
       end
     end
 
     context "when the user does not have a transition-aged-youth case" do
       it "is false" do
-        case_assignments = [case_assignment_without_transition_aged_youth]
-        user = create(:volunteer, case_assignments: case_assignments)
+        expect(user).not_to be_serving_transition_aged_youth
+      end
+    end
+
+    context "when the user's only transition-aged-youth case is inactive" do
+      it "is false" do
+        create(:case_assignment, casa_case: create(:casa_case, casa_org: user.casa_org, active: false), volunteer: user)
+
+        expect(user).not_to be_serving_transition_aged_youth
+      end
+    end
+
+    context "when the user is unassigned from a transition-aged-youth case" do
+      it "is false" do
+        create(:case_assignment, casa_case: create(:casa_case, casa_org: user.casa_org), volunteer: user, active: false)
 
         expect(user).not_to be_serving_transition_aged_youth
       end
     end
   end
 
-  describe "#volunteers_with_no_supervisor?" do
-    subject { User.volunteers_with_no_supervisor(casa_org) }
-    let(:casa_org) { create(:casa_org) }
-    context "no volunteers" do
-      it "returns none" do
-        expect(subject).to eq([])
-      end
-    end
-    context "volunteers" do
-      let!(:unassigned1) { create(:volunteer, display_name: "aaa", casa_org: casa_org) }
-      let!(:unassigned2) { create(:volunteer, display_name: "bbb", casa_org: casa_org) }
-      let!(:unassigned2_different_org) { create(:volunteer, display_name: "ccc") }
-      let!(:assigned1) { create(:volunteer, display_name: "ddd", casa_org: casa_org) }
-      let!(:assignment1) { create(:supervisor_volunteer, volunteer: assigned1) }
-      let!(:assigned2_different_org) { assignment1.volunteer }
-      let!(:unassigned_inactive_volunteer) { create(:volunteer, display_name: "eee", casa_org: casa_org, active: false) }
-      let!(:previously_assigned) { create(:volunteer, display_name: "fff", casa_org: casa_org) }
-      let!(:inactive_assignment) { create(:supervisor_volunteer, volunteer: previously_assigned, is_active: false) }
+  context "when there is an associated Other Duty record" do
+    let(:user) { create(:supervisor) }
+    let!(:duty) { create(:other_duty, creator: user) }
 
-      it "returns unassigned volunteers" do
-        expect(subject.map(&:display_name).sort).to eq(["aaa", "bbb", "fff"])
-      end
+    it "cannot be destroyed without destroying the associated Other Duty record" do
+      expect { user.delete }.to raise_error ActiveRecord::InvalidForeignKey
+    end
+  end
+
+  describe ".no_recent_sign_in" do
+    it "returns users who haven't signed in in 30 days" do
+      old_sign_in_user = create(:user, last_sign_in_at: 39.days.ago)
+      create(:user, last_sign_in_at: 5.days.ago)
+      expect(User.no_recent_sign_in).to contain_exactly(old_sign_in_user)
+    end
+
+    it "returns users who haven't signed in ever" do
+      user = create(:user, last_sign_in_at: nil)
+      expect(User.no_recent_sign_in).to contain_exactly(user)
+    end
+  end
+
+  describe "#record_previous_emails" do
+    # create user, check for side effects, test method
+    let!(:new_volunteer) { create(:user, email: "firstemail@example.com") }
+
+    it "instantiates with an empty old_emails attribute" do
+      expect(new_volunteer.old_emails).to be_empty
+    end
+
+    it "saves the old email when a volunteer changes their email" do
+      new_volunteer.update(email: "secondemail@example.com")
+      new_volunteer.confirm
+
+      expect(new_volunteer.email).to eq("secondemail@example.com")
+
+      expect(new_volunteer.old_emails).to contain_exactly("firstemail@example.com")
+    end
+  end
+
+  describe "#filter_old_emails" do
+    let!(:new_volunteer) { create(:user, email: "firstemail@example.com") }
+
+    it "correctly filters out reinstated emails from old_emails when updating" do
+      new_volunteer.update(email: "secondemail@example.com")
+      new_volunteer.confirm
+      new_volunteer.filter_old_emails!(new_volunteer.email)
+
+      new_volunteer.update(email: "firstemail@example.com")
+      new_volunteer.confirm
+      new_volunteer.filter_old_emails!(new_volunteer.email)
+
+      expect(new_volunteer.email).to eq("firstemail@example.com")
+      expect(new_volunteer.old_emails).to contain_exactly("secondemail@example.com")
     end
   end
 end

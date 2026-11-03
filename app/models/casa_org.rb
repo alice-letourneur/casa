@@ -1,14 +1,39 @@
 class CasaOrg < ApplicationRecord
+  prepend ActiveSupport::ToJsonWithActiveSupportEncoder
+  # NOTE: location of the default report template
+  CASA_DEFAULT_COURT_REPORT = File.new(Rails.root.join("app/documents/templates/default_report_template.docx"), "r")
+  CASA_DEFAULT_LOGO = Rails.public_path.join("logo.jpeg")
+
+  scope :with_logo, -> { joins(:logo_attachment) }
+
+  before_save :normalize_phone_number
+  before_create :set_slug
+  before_update :sanitize_svg
+
   validates :name, presence: true, uniqueness: true
+  validates_with CasaOrgValidator
+  # The credentials check below verifies the account/API keys but not the phone number, and native
+  # form validation is disabled app-wide -- so enforce the phone's presence server-side.
+  validates :twilio_phone_number, presence: true, if: :twilio_enabled, on: :update
+  validate :validate_twilio_credentials, if: :twilio_enabled, on: :update
 
   has_many :users, dependent: :destroy
   has_many :casa_cases, dependent: :destroy
   has_many :contact_type_groups, dependent: :destroy
-  has_one :casa_org_logo, dependent: :destroy
   has_many :hearing_types, dependent: :destroy
+  has_many :mileage_rates, dependent: :destroy
+  has_many :case_assignments, through: :users, source: :casa_cases
+  has_many :languages, dependent: :destroy
+  has_many :placements, through: :casa_cases
+  has_many :banners, dependent: :destroy
+  has_many :learning_hour_types, dependent: :destroy
+  has_many :learning_hour_topics, dependent: :destroy
+  has_many :case_groups, dependent: :destroy
+  has_many :contact_topics
+  has_many :custom_org_links, dependent: :destroy
   has_one_attached :logo
-
-  delegate :url, :alt_text, :size, to: :casa_org_logo, prefix: :logo, allow_nil: true
+  has_one_attached :court_report_template
+  has_many :placement_types, dependent: :destroy
 
   def casa_admins
     CasaAdmin.in_organization(self)
@@ -23,9 +48,127 @@ class CasaOrg < ApplicationRecord
   end
 
   def case_contacts
-    CaseContact.where(
+    CaseContact.includes(:creator).where(
       casa_case_id: CasaCase.where(casa_org_id: id)
+    ).or(
+      CaseContact.includes(:creator).where(
+        casa_case_id: nil, creator: {casa_org: self}
+      )
     )
+  end
+
+  def followups
+    Followup.in_organization(self)
+  end
+
+  def case_contacts_count
+    case_contacts.count
+  end
+
+  # Per-org totals for the all-CASA dashboard, which lists every organisation: #case_contacts_count
+  # and #user_count each cost a query per row when called in that loop. COALESCE mirrors
+  # #case_contacts_count, which attributes a contact to its case's org, falling back to the
+  # creator's org for org-less (draft) contacts. "users" is the alias Rails gives the :creator
+  # join here -- there is only one users join in this relation.
+  def self.case_contacts_count_by_org_id
+    CaseContact
+      .left_joins(:casa_case, :creator)
+      .group(Arel.sql("COALESCE(casa_cases.casa_org_id, users.casa_org_id)"))
+      .count
+  end
+
+  def self.user_count_by_org_id
+    User.group(:casa_org_id).count
+  end
+
+  def org_logo
+    if logo.attached?
+      Rails.application.routes.url_helpers.rails_blob_path(logo, only_path: true)
+    else
+      CASA_DEFAULT_LOGO
+    end
+  end
+
+  def open_org_court_report_template(&)
+    if court_report_template.attached?
+      court_report_template.open(&)
+    else
+      yield CASA_DEFAULT_COURT_REPORT
+    end
+  end
+
+  def user_count
+    users.count
+  end
+
+  def set_slug
+    self.slug = name.parameterize
+  end
+
+  def generate_defaults
+    ActiveRecord::Base.transaction do
+      ContactTopic.generate_for_org!(self)
+      ContactTypeGroup.generate_for_org!(self)
+      HearingType.generate_for_org!(self)
+    end
+  end
+
+  def contact_types_by_group
+    contact_type_groups.joins(:contact_types).where(contact_types: {active: true}).alphabetically.uniq
+  end
+
+  # Returns contact types that are active and tied to the CasaOrg as a an array of hashes that can be used by the multiple select component
+  # @return [ActiveRecord::Relation<ContactType>]
+  def contact_types
+    ContactType.joins(:contact_type_group).where(active: true, contact_type_group: {casa_org: self}).order(:name)
+  end
+
+  # Given a specific date, returns the active mileage rate.
+  # If more than one mileage rate is active for a given date, assumes the rate for the most recent date takes precedence.
+  # For instance, given two mileage rates that are active, one set on January 1, 1970 and one set on January 3, 1970:
+  # then the active rate for the given date of January 5, 1970 would be the January 3 rate.
+  # If no rates are active for the given date, will return nil.
+  # @param date [Date]
+  # @return [BigDecimal, nil]
+  def mileage_rate_for_given_date(date)
+    mileage_rates.where(is_active: true, effective_date: ..date).order(effective_date: :desc).first&.amount
+  end
+
+  def has_alternate_active_banner?(current_banner_id)
+    banners.where(active: true).where.not(id: current_banner_id).exists?
+  end
+
+  private
+
+  def sanitize_svg
+    if attachment_changes["logo"]
+      file = attachment_changes["logo"].attachable
+      sanitized_file = SvgSanitizerService.sanitize(file)
+      logo.unfurl(sanitized_file)
+    end
+  end
+
+  # def to_param
+  #   id
+  #   # slug # TODO use slug eventually for routes
+  # end
+
+  def validate_twilio_credentials
+    # Skip the API round-trip when the phone is blank: the presence validation already fails the form,
+    # so there's no point calling Twilio (and the empty-phone submit must not reach the network).
+    return if twilio_phone_number.blank?
+    client = Twilio::REST::Client.new(twilio_api_key_sid, twilio_api_key_secret, twilio_account_sid)
+    begin
+      client.messages.list(limit: 1)
+    rescue Twilio::REST::RestError, URI::InvalidURIError
+      errors.add(:base, "Your Twilio credentials are incorrect, kindly check and try again.")
+    end
+  end
+
+  def normalize_phone_number
+    if twilio_phone_number&.length == 10
+      self.twilio_phone_number = "+1#{twilio_phone_number}"
+    end
   end
 end
 
@@ -33,11 +176,26 @@ end
 #
 # Table name: casa_orgs
 #
-#  id           :bigint           not null, primary key
-#  address      :string
-#  display_name :string
-#  footer_links :string           default([]), is an Array
-#  name         :string           not null
-#  created_at   :datetime         not null
-#  updated_at   :datetime         not null
+#  id                          :bigint           not null, primary key
+#  additional_expenses_enabled :boolean          default(FALSE)
+#  address                     :string
+#  display_name                :string
+#  footer_links                :string           default([]), is an Array
+#  learning_topic_active       :boolean          default(FALSE)
+#  name                        :string           not null
+#  other_duties_enabled        :boolean          default(TRUE)
+#  show_driving_reimbursement  :boolean          default(TRUE)
+#  show_fund_request           :boolean          default(FALSE)
+#  slug                        :string
+#  twilio_account_sid          :string
+#  twilio_api_key_secret       :string
+#  twilio_api_key_sid          :string
+#  twilio_enabled              :boolean          default(FALSE)
+#  twilio_phone_number         :string
+#  created_at                  :datetime         not null
+#  updated_at                  :datetime         not null
+#
+# Indexes
+#
+#  index_casa_orgs_on_slug  (slug) UNIQUE
 #

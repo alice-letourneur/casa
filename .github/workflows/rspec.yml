@@ -1,0 +1,121 @@
+name: rspec
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "doc/**"
+      - "**/*.md"
+  pull_request:
+    branches:
+      - main
+      - rfg-event-2025
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rspec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RAILS_ENV: test
+      TEST_MAX_DURATION: 60
+      PARALLEL_TEST_PROCESSORS: 4
+
+    services:
+      db:
+        image: postgres:14.24
+        env:
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@824c0e29fdfc7d689c191c27acc969d2d04b7dd8 # v1
+        with:
+          bundler-cache: true
+
+      - name: Set up JS
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: "npm"
+      - run: npm ci
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tmp/parallel_runtime_rspec.log
+          key: parallel-runtime-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            parallel-runtime-${{ github.head_ref || github.ref_name }}-
+            parallel-runtime-main-
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get -yqq install libpq-dev
+
+      - name: Build App
+        env:
+          POSTGRES_HOST: localhost
+          DATABASE_HOST: localhost
+          POSTGRES_USER: postgres
+          CASA_DATABASE_PASSWORD: password
+          POSTGRES_PASSWORD: password
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_PORT: 5432
+        run: |
+          bundle exec rake parallel:create parallel:load_schema
+          bundle exec rails assets:precompile
+
+      - name: Run rspec
+        env:
+          DATABASE_HOST: localhost
+          POSTGRES_USER: postgres
+          CASA_DATABASE_PASSWORD: password
+          POSTGRES_HOST_AUTH_METHOD: trust
+          RUN_SIMPLECOV: true
+        run: |
+          group_by=filesize
+          if [ -s tmp/parallel_runtime_rspec.log ]; then
+            group_by=runtime
+          fi
+          RUBYOPT='-W:no-deprecated -W:no-experimental' bundle exec parallel_test spec --type rspec -n 4 --group-by "$group_by"
+
+      - name: Combine runtime logs
+        run: |
+          runtime_logs=(tmp/parallel_runtime_rspec_worker*.log)
+          if [ "${#runtime_logs[@]}" -ne "$PARALLEL_TEST_PROCESSORS" ]; then
+            echo "Expected $PARALLEL_TEST_PROCESSORS runtime logs, found ${#runtime_logs[@]}"
+            exit 1
+          fi
+          cat "${runtime_logs[@]}" > tmp/parallel_runtime_rspec.log
+
+      - name: Merge coverage
+        run: |
+          bundle exec ruby -rsimplecov -e 'resultsets = Dir["coverage/parallel*/.resultset.json"]; abort "Expected 4 SimpleCov resultsets, found #{resultsets.size}" unless resultsets.size == 4; SimpleCov.collate(resultsets)'
+
+      - uses: qltysh/qlty-action/coverage@c9b09987143d1e4ac955f4803c7bea742102feb5 # v2.4.0
+        with:
+          token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+          files: coverage/.resultset.json
+
+      - name: Archive selenium screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: selenium-screenshots
+          path: |
+            ${{ github.workspace }}/tmp/capybara/*.png
+            ${{ github.workspace }}/tmp/capybara/*.html

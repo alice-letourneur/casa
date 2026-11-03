@@ -1,0 +1,107 @@
+require "rails_helper"
+
+RSpec.describe "/case_contacts_new_design", type: :request do
+  let(:organization) { create(:casa_org) }
+  let(:admin) { create(:casa_admin, casa_org: organization) }
+
+  before { sign_in admin }
+
+  context "when new_case_contact_table flag is disabled" do
+    before do
+      allow(Flipper).to receive(:enabled?).with(:new_case_contact_table).and_return(false)
+    end
+
+    describe "GET /index" do
+      it "redirects to case_contacts_path" do
+        get case_contacts_new_design_path
+        expect(response).to redirect_to(case_contacts_path)
+      end
+
+      it "sets an alert message" do
+        get case_contacts_new_design_path
+        expect(flash[:alert]).to eq("This feature is not available.")
+      end
+    end
+  end
+
+  context "when new_case_contact_table flag is enabled" do
+    before do
+      allow(Flipper).to receive(:enabled?).with(:new_case_contact_table).and_return(true)
+    end
+
+    describe "GET /index" do
+      subject(:request) do
+        get case_contacts_new_design_path
+
+        response
+      end
+
+      let!(:casa_case) { create(:casa_case, casa_org: organization) }
+      let!(:past_contact) { create(:case_contact, :active, casa_case: casa_case, occurred_at: 3.weeks.ago) }
+      let!(:recent_contact) { create(:case_contact, :active, casa_case: casa_case, occurred_at: 3.days.ago) }
+      let!(:draft_contact) { create(:case_contact, casa_case: casa_case, occurred_at: 5.days.ago, status: "started") }
+
+      it { is_expected.to have_http_status(:success) }
+
+      it "lists exactly two active contacts and one draft" do
+        doc = Nokogiri::HTML(request.body)
+        case_contact_rows = doc.css('[data-testid="case_contact-row"]')
+        expect(case_contact_rows.size).to eq(3)
+      end
+
+      it "shows the draft badge exactly once" do
+        doc = Nokogiri::HTML(request.body)
+        expect(doc.css('[data-testid="draft-badge"]').count).to eq(1)
+      end
+
+      it "orders contacts by occurred_at desc" do
+        body = request.body
+
+        recent_index = body.index(I18n.l(recent_contact.occurred_at, format: :full))
+        past_index = body.index(I18n.l(past_contact.occurred_at, format: :full))
+
+        expect(recent_index).to be < past_index
+      end
+    end
+
+    describe "GET /index filtering (server-side)" do
+      let!(:casa_case) { create(:casa_case, casa_org: organization) }
+      let!(:other_case) { create(:casa_case, casa_org: organization) }
+      let(:type_a) { create(:contact_type) }
+      let(:type_b) { create(:contact_type) }
+      let!(:active_here) do
+        create(:case_contact, :active, casa_case: casa_case, medium_type: CaseContact::IN_PERSON,
+          occurred_at: 2.days.ago, contact_types: [type_a, type_b])
+      end
+      let!(:draft_here) do
+        create(:case_contact, casa_case: casa_case, status: "started", medium_type: CaseContact::VIDEO, occurred_at: 3.days.ago)
+      end
+      let!(:elsewhere) { create(:case_contact, :active, casa_case: other_case, occurred_at: 4.days.ago) }
+
+      def row_count(params = {})
+        get case_contacts_new_design_path(params)
+        Nokogiri::HTML(response.body).css('[data-testid="case_contact-row"]').size
+      end
+
+      it "shows every contact with no filters" do
+        expect(row_count).to eq(3)
+      end
+
+      it "filters by casa_case_ids" do
+        expect(row_count(casa_case_ids: [casa_case.id])).to eq(2)
+      end
+
+      it "filters by contact_medium" do
+        expect(row_count(contact_medium: CaseContact::VIDEO)).to eq(1)
+      end
+
+      it "hides drafts with no_drafts" do
+        expect(row_count(no_drafts: "1")).to eq(2)
+      end
+
+      it "filters by contact_type_ids without duplicating a multi-type row" do
+        expect(row_count(contact_type_ids: [type_a.id, type_b.id])).to eq(1)
+      end
+    end
+  end
+end

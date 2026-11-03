@@ -1,0 +1,33 @@
+<%# Org-settings Contact Topics list (casa_app; rendered only by casa_org/edit). Each topic is a
+    stacked block -- question + status + actions on the top row, and the free-text details span the
+    full card width below (a 4-column table squeezed the long details into a narrow column). Delete
+    is a Dialog confirm-button (shared/confirm_button). %>
+<div class="p-5 sm:p-6 lg:rounded-2xl lg:border lg:border-slate-200 lg:bg-white lg:shadow-sm">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <h3 class="text-base font-semibold text-slate-900 hidden lg:block">Contact topics</h3>
+    <%= link_to new_contact_topic_path, class: button_classes(:secondary) do %>
+      <i class="bi bi-plus-lg" aria-hidden="true"></i> New contact topic
+    <% end %>
+  </div>
+  <div id="contact-topics" class="mt-4 space-y-3">
+    <% @contact_topics.each do |contact_topic| %>
+      <div id="contact_topic-<%= contact_topic.id %>" class="rounded-xl border border-slate-200 p-4">
+        <div class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          <p class="min-w-0 flex-1 break-words font-medium text-slate-800"><%= contact_topic.question %></p>
+          <div class="flex shrink-0 items-center gap-3 text-sm">
+            <% if contact_topic.active %>
+              <span class="inline-flex items-center gap-1 text-xs font-medium text-emerald-700"><i class="bi bi-check-circle-fill" aria-hidden="true"></i> Active</span>
+            <% else %>
+              <span class="inline-flex items-center gap-1 text-xs font-medium text-slate-500"><i class="bi bi-slash-circle" aria-hidden="true"></i> Inactive</span>
+            <% end %>
+            <%= link_to edit_contact_topic_path(contact_topic), class: ghost_class do %><i class="bi bi-pencil" aria-hidden="true"></i> Edit<% end %>
+            <%= render "shared/confirm_button", url: soft_delete_contact_topic_path(contact_topic), method: :delete, title: "Delete contact topic?", message: "This topic and its related questions will be deleted and will no longer be presented while filling out case contacts. This will not affect case contacts that have already been created.", confirm_label: "Delete court report topic", trigger_label: "Delete", trigger_icon: "bi bi-trash", trigger_class: ghost_class(:danger) %>
+          </div>
+        </div>
+        <% if contact_topic.details.present? %>
+          <p class="mt-2 whitespace-pre-line break-words text-sm text-slate-600"><%= contact_topic.details %></p>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</div>

@@ -1,0 +1,53 @@
+on:
+  workflow_call:
+jobs:
+  combine_and_report:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_STORAGE_KEY: ${{ secrets.STORAGE_ACCESS_KEY }}
+      AZURE_STORAGE_ACCOUNT: ${{ secrets.ACCOUNT_NAME }}
+      STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
+    steps:
+      - name: Checkout Project
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: artifacts
+
+      - name: Decompress chunk test reports
+        if: ${{ !cancelled() }}
+        run: |
+          find artifacts -name "test_reports*.zip" -exec unzip -d test_reports {} \;
+          find test_reports -name "**/test_reports*.zip" -exec unzip -d test_reports {} \;
+
+      - name: Merge parallel runtime log parts
+        if: ${{ !cancelled() && env.AZURE_STORAGE_KEY != '' }}
+        run: |
+          cat artifacts/**/parallel_runtime_rspec*.log > parallel_runtime.log
+
+      - name: Upload log file to Azure Blob Storage
+        if: ${{ !cancelled() && env.AZURE_STORAGE_KEY != '' }}
+        run: |
+          az storage blob upload \
+          -c $STORAGE_CONTAINER \
+          --file parallel_runtime.log \
+          -n parallel_runtime.log \
+          --overwrite true
+
+      - name: Test Summary
+        id: test_summary
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
+        with:
+          paths: |
+            test_reports/**/rspec*.xml
+      - name: Set job status
+        if: ${{ steps.test_summary.outputs.failed > 0 }}
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            core.setFailed('There are test failures')

@@ -1,22 +1,17 @@
 class CaseContactDecorator < Draper::Decorator
   delegate_all
 
-  # Returns the contact duration in one of the following formats
-  # - `N` minutes
-  # - `N` hours `M` minutes
-  # - `N` hours
+  NOTES_CHARACTER_LIMIT = 100
+
   def duration_minutes
     minutes = object.duration_minutes
 
-    return "#{minutes} minutes" if minutes <= 60
-
-    formatted_hour_value = minutes / 60
-    formatted_minutes_value = minutes.remainder(60)
-
-    if formatted_minutes_value.zero?
-      "#{formatted_hour_value} #{"hour".pluralize(formatted_hour_value)}"
+    if !minutes
+      "Duration not set"
+    elsif minutes <= 60
+      "#{minutes} minutes"
     else
-      "#{formatted_hour_value} #{"hour".pluralize(formatted_hour_value)} #{formatted_minutes_value} minutes"
+      formatted_hours_and_minutes(minutes)
     end
   end
 
@@ -25,49 +20,184 @@ class CaseContactDecorator < Draper::Decorator
   end
 
   def miles_traveled
-    object.miles_driven.zero? ? "" : object.miles_driven
+    object.miles_driven.zero? ? nil : "#{object.miles_driven} miles driven"
   end
 
-  def reimbursement
-    object.want_driving_reimbursement ? "Yes 🟢" : "No"
+  # Text for the reimbursement status badge shown on the case contact card so
+  # volunteers can see at a glance whether their reimbursement is still pending
+  # or has been completed, without having to ask their supervisor.
+  def reimbursement_status_text
+    object.reimbursement_complete? ? "Reimbursement complete" : "Reimbursement pending"
+  end
+
+  # Bootstrap badge color for the reimbursement status.
+  def reimbursement_status_badge_type
+    object.reimbursement_complete? ? :success : :warning
   end
 
   def contact_made
-    object.contact_made ? "Yes ✅" : "No ❌"
+    object.contact_made ? nil : "No contact made"
   end
 
   def report_contact_made
     object.contact_made
   end
 
+  def subheading
+    [
+      I18n.l(object.occurred_at, format: :full, default: nil),
+      # Medium (how the contact happened) reads as plain text alongside the other facts rather than
+      # as an ambiguous icon; omitted when unset, like the conditional facts below it.
+      (medium_label if object.medium_type.present?),
+      duration_minutes,
+      contact_made,
+      miles_traveled
+    ].compact.join(" | ")
+  end
+
+  def paragraph_notes
+    if object.notes && object.notes.length > CaseContactDecorator::NOTES_CHARACTER_LIMIT
+      helpers.content_tag(:p, limited_notes)
+    else
+      helpers.simple_format(full_notes)
+    end
+  end
+
   def contact_types
-    object.contact_types
-      &.map { |ct| ct.name }
-      &.to_sentence(last_word_connector: ", and ") || ""
+    if object.contact_types.any?
+      object.contact_types&.map { |ct| ct.name }&.to_sentence(last_word_connector: ", and ")
+    else
+      "No contact type specified"
+    end
+  end
+
+  def contact_types_comma_separated
+    if object.contact_types.any?
+      object.contact_types&.map { |ct| ct.name }&.join(", ")
+    else
+      "No contact type specified"
+    end
   end
 
   def report_contact_types
     object.contact_types&.map { |ct| ct.name }&.join("|")
   end
 
-  def medium_type
-    object.medium_type.blank? ? "Unknown" : object.medium_type.titleize
-  end
-
-  def medium_type_icon
+  def medium_icon_classes
     case object.medium_type
     when CaseContact::IN_PERSON
-      "👥 #{object.medium_type}"
+      "lni lni-users"
     when CaseContact::TEXT_EMAIL
-      "🔤 #{object.medium_type}"
+      "lni lni-envelope"
     when CaseContact::VIDEO
-      "▶ #{object.medium_type}️"
+      "lni lni-camera"
     when CaseContact::VOICE_ONLY
-      "📞 #{object.medium_type}"
+      "lni lni-phone"
     when CaseContact::LETTER
-      "✉️ #{object.medium_type}️"
+      "lni lni-empty-file"
     else
-      object.medium_type
+      "lni lni-question-circle"
+    end
+  end
+
+  # Bootstrap Icons variant of medium_icon_classes, for the Tailwind (casa_app)
+  # views, which load bootstrap-icons rather than the legacy LineIcons font.
+  def medium_icon
+    case object.medium_type
+    when CaseContact::IN_PERSON then "bi bi-people"
+    when CaseContact::TEXT_EMAIL then "bi bi-envelope"
+    when CaseContact::VIDEO then "bi bi-camera-video"
+    when CaseContact::VOICE_ONLY then "bi bi-telephone"
+    when CaseContact::LETTER then "bi bi-envelope-paper"
+    else "bi bi-question-circle"
+    end
+  end
+
+  # Human-readable medium name in sentence case (design-system), used as the medium icon's tooltip +
+  # accessible label: "voice-only" -> "Voice only", "text/email" -> "Text/email". Falls back for a
+  # contact whose medium is not set.
+  def medium_label
+    object.medium_type.present? ? object.medium_type.tr("-", " ").humanize : "Medium not set"
+  end
+
+  def contact_groups
+    groups = contact_groups_with_types.keys
+    if groups.count > 0
+      groups.join(", ")
+    else
+      "Not selected"
+    end
+  end
+
+  def limited_notes
+    object.notes.truncate(NOTES_CHARACTER_LIMIT)
+  end
+
+  def full_notes
+    object.notes
+  end
+
+  def show_contact_type?(contact_type_id)
+    object.case_contact_contact_type.map(&:contact_type_id).include?(contact_type_id)
+  end
+
+  def additional_expenses_count
+    object.additional_expenses.any? ? object.additional_expenses.length : 0
+  end
+
+  def address_of_volunteer
+    if volunteer_address&.present?
+      volunteer_address
+    elsif volunteer
+      volunteer.address&.content
+    end
+  end
+
+  # Structured parts to prefill the reimbursement address fields: prefer the volunteer's saved
+  # structured Address; otherwise put the whole known address (snapshot or legacy content) into
+  # line 1 so nothing is lost when it can't be split into parts.
+  def volunteer_address_parts
+    address = volunteer&.address
+    if address&.structured?
+      Address::STRUCTURED_FIELDS.index_with { |field| address.public_send(field) }
+    else
+      {line_1: address_of_volunteer, line_2: nil, city: nil, state: nil, zip: nil}
+    end
+  end
+
+  # Structured address parts for a SPECIFIC volunteer -- prefills the reimbursement address when the
+  # editor picks one from the case's volunteers.
+  def address_parts_for(some_volunteer)
+    address = some_volunteer&.address
+    if address&.structured?
+      Address::STRUCTURED_FIELDS.index_with { |field| address.public_send(field) }
+    else
+      {line_1: address&.content, line_2: nil, city: nil, state: nil, zip: nil}
+    end
+  end
+
+  def ambiguous_volunteer_address_message
+    "No volunteer is assigned to this case, so a reimbursement mailing address can't be set."
+  end
+
+  def form_title
+    active? ? "Editing existing case contact" : "Record new case contact"
+  end
+
+  def form_updated_message
+    "Case contact created at #{I18n.l(created_at, format: :time_on_date)}, was successfully updated."
+  end
+
+  private
+
+  def formatted_hours_and_minutes(minutes)
+    formatted_hour_value = minutes / 60
+    formatted_minutes_value = minutes.remainder(60)
+
+    if formatted_minutes_value.zero?
+      "#{formatted_hour_value} #{"hour".pluralize(formatted_hour_value)}"
+    else
+      "#{formatted_hour_value} #{"hour".pluralize(formatted_hour_value)} #{formatted_minutes_value} minutes"
     end
   end
 end

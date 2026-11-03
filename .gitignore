@@ -13,16 +13,18 @@
 !/log/.keep
 !/tmp/.keep
 .DS_Store
+.env
 
 # Ignore uploaded files in development.
 /storage/*
 !/storage/.keep
 
-/public/assets
 .byebug_history
 
 # Ignore master key for decrypting credentials and more.
 /config/master.key
+/config/credentials/production.key
+/config/credentials.yml.enc
 
 # intellij IDE
 *.iml
@@ -39,16 +41,27 @@ yarn-debug.log*
 
 coverage/
 .idea/
-config/credentials.yml.enc
 vendor/bundle/
 .generators
-
-cypress/screenshots/*
-cypress/videos/*
 
 # produced by tests (?)
 .rakeTasks
 
-# produced by tests (?)
-*.csv
+.*.swp
 
+# Used for local developmen on Nix systems
+.direnv/
+.envrc
+default.nix
+
+npm-debug.log
+
+# Ignore compiled assets
+/app/assets/builds/*
+
+# In case we want to keep something in the compiled assets directory
+!/app/assets/builds/.keep
+.aider*
+
+# Personal AI working notes (Claude Code local memory)
+CLAUDE.local.md

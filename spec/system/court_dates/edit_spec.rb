@@ -1,0 +1,128 @@
+# frozen_string_literal: true
+
+require "rails_helper"
+
+RSpec.describe "court_dates/edit", type: :system do
+  let(:now) { Date.new(2021, 1, 1) }
+  let(:organization) { create(:casa_org) }
+  let(:admin) { create(:casa_admin, casa_org: organization) }
+  let(:volunteer) { create(:volunteer) }
+  let(:supervisor) { create(:supervisor, casa_org: organization) }
+  let!(:casa_case) { create(:casa_case, casa_org: organization) }
+  let!(:past_court_date) { create(:court_date, :with_court_details, casa_case: casa_case, date: now - 1.week) }
+  let!(:future_court_date) { create(:court_date, :with_court_details, casa_case: casa_case, date: now + 1.week) }
+
+  before do
+    travel_to now
+  end
+
+  context "as an admin" do
+    before do
+      sign_in admin
+      visit casa_case_path(casa_case)
+      click_on past_court_date.date.strftime("%B %-d, %Y")
+      click_on "Edit"
+    end
+
+    it "shows court orders" do
+      court_order = past_court_date.case_court_orders.first
+
+      expect(page).to have_text(court_order.text)
+      expect(page).to have_text(court_order.implementation_status.humanize)
+    end
+
+    it "adds a standard court order", :js do
+      select("Family therapy", from: "Court order type")
+      click_button("Add a court order")
+
+      textarea = all("textarea.court-order-text-entry").last
+      expect(textarea.value).to eq("Family therapy")
+    end
+
+    it "adds a custom court order", :js do
+      click_button("Add a court order")
+
+      textarea = all("textarea.court-order-text-entry").last
+      expect(textarea.value).to eq("")
+    end
+
+    it "edits past court date", :js do
+      expect(page).to have_text("Editing court date")
+      expect(page).to have_text("Case number:")
+      expect(page).to have_text(casa_case.case_number)
+      expect(page).to have_text("Add court date")
+      expect(page).to have_field("court_date_date", with: "2020-12-25")
+      expect(page).to have_text("Add court report due date")
+      expect(page).to have_field("court_date_court_report_due_date")
+      expect(page).to have_select("Judge")
+      expect(page).to have_select("Hearing type")
+      expect(page).to have_text("Court orders")
+      expect(page).to have_text("Please check that you didn't enter any youth names")
+      expect(page).to have_text("Add a court order")
+
+      page.find('button[data-action="court-order-form#add"]').click
+      find("#court-orders-list-container").first("textarea").send_keys("Court Order Text One")
+
+      within ".top-page-actions" do
+        click_on "Update"
+      end
+
+      expect(page).to have_text("Court Order Text One")
+    end
+
+    it "allows deleting a future court date", :js do
+      visit root_path
+      click_on "Cases"
+      click_on casa_case.case_number
+
+      expect(page).to have_content past_court_date.date.strftime("%B %-d, %Y")
+      expect(page).to have_content future_court_date.date.strftime("%B %-d, %Y")
+      page.find("a", text: future_court_date.date.strftime("%B %-d, %Y")).click
+      accept_alert "Are you sure?" do
+        page.find("a", text: "Delete future court date").click
+      end
+      expect(page).to have_content "Court date was successfully deleted"
+
+      expect(page).to have_content past_court_date.date.strftime("%B %-d, %Y")
+      expect(page).not_to have_content future_court_date.date.strftime("%B %-d, %Y")
+    end
+  end
+
+  context "as a supervisor" do
+    it "allows deleting a future court date", :js do
+      sign_in supervisor
+
+      visit root_path
+      click_on "Cases"
+      click_on casa_case.case_number
+
+      expect(page).to have_content past_court_date.date.strftime("%B %-d, %Y")
+      expect(page).to have_content future_court_date.date.strftime("%B %-d, %Y")
+      page.find("a", text: future_court_date.date.strftime("%B %-d, %Y")).click
+      accept_alert "Are you sure?" do
+        page.find("a", text: "Delete future court date").click
+      end
+
+      expect(page).to have_content "Court date was successfully deleted."
+      expect(page).to have_content past_court_date.date.strftime("%B %-d, %Y")
+      expect(page).not_to have_content future_court_date.date.strftime("%B %-d, %Y")
+    end
+  end
+
+  context "as a volunteer" do
+    it "does not allow deleting a future court date", :js do
+      volunteer.casa_cases = [casa_case]
+      sign_in volunteer
+
+      visit root_path
+      click_on "Cases"
+      click_on casa_case.case_number
+
+      expect(page).to have_content past_court_date.date.strftime("%B %-d, %Y")
+      expect(page).to have_content future_court_date.date.strftime("%B %-d, %Y")
+      page.find("a", text: future_court_date.date.strftime("%B %-d, %Y")).click
+
+      expect(page).not_to have_content "Delete future court date"
+    end
+  end
+end

@@ -1,0 +1,47 @@
+class FundRequestsController < ApplicationController
+  layout "casa_app"
+
+  before_action :verify_casa_case
+  before_action -> { @active_nav = "cases" }
+  after_action :verify_authorized
+
+  def new
+    @fund_request = FundRequest.new
+    authorize @fund_request
+  end
+
+  def create
+    @fund_request = FundRequest.new(parsed_params)
+    authorize @fund_request
+
+    if @fund_request.save
+      FundRequestMailer.send_request(nil, @fund_request).deliver
+      redirect_to casa_case_path(@casa_case), notice: "Fund request was sent for case #{@casa_case.case_number}"
+    else
+      render :new, status: :unprocessable_content
+    end
+  end
+
+  private
+
+  def verify_casa_case
+    @casa_case = current_organization.casa_cases.friendly.find(params[:casa_case_id])
+  rescue ActiveRecord::RecordNotFound
+    redirect_to root_path
+  end
+
+  def parsed_params
+    params.require(:fund_request).permit(
+      :submitter_email,
+      :youth_name,
+      :payment_amount,
+      :deadline,
+      :request_purpose,
+      :payee_name,
+      :requested_by_and_relationship,
+      :other_funding_source_sought,
+      :impact,
+      :extra_information
+    )
+  end
+end
